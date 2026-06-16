@@ -157,3 +157,8 @@ on `main`; intentional history changes require disabling it first.
   correct `false` flips to `true` and the gate never passes. Compare booleans explicitly.
 - **Fail-closed is intentional:** a missing/unparseable verdict, an action error, or a flake all
   produce a red gate, never a silent green.
+- **`arch_audit` policy is hardcoded** (labels `tech-debt`/`audit:claude`, 1-issue/PR cap, fingerprint
+  format) in the shared prompt — fine while one repo opts in. Extract those values to inputs (or a
+  per-repo `audit_spec` symmetric with `review_spec`) the first time a *second* consumer enables
+  `arch_audit` and needs different values. It's also gated in two places (the `gh issue` tools/turn
+  bump in `claude_args` and the prompt section) — edit them as a pair.
