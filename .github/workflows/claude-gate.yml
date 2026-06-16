@@ -28,6 +28,11 @@ on:
         required: false
         type: string
         default: "filiptrivan"
+      arch_audit:
+        description: "Opt-in: add a non-blocking architecture / tech-debt lens on touched code that may file tracked tech-debt issues"
+        required: false
+        type: boolean
+        default: false
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
@@ -57,11 +62,12 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Verdict transported via a Write to claude-verdict.json (this pinned action build
           # does not surface --json-schema structured_output); the gate step reads that file.
-          claude_args: '--model ${{ inputs.model }} --max-turns 20 --allowed-tools "mcp__github_inline_comment__create_inline_comment,Write,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'
+          claude_args: "--model ${{ inputs.model }} --max-turns ${{ inputs.arch_audit && '25' || '20' }} --allowed-tools \"mcp__github_inline_comment__create_inline_comment,Write,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)${{ inputs.arch_audit && ',Bash(gh issue list:*),Bash(gh issue create:*),Bash(gh issue edit:*),Bash(gh issue view:*)' || '' }}\""
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
             REVIEW ROUND: ${{ (github.event.action == 'opened' || github.event.action == 'ready_for_review') && 'first' || 'subsequent' }}
+            ARCH AUDIT: ${{ inputs.arch_audit }}
 
             You are the autonomous review gate for this repository. Routine PRs have NO required human
             reviewer, so the verdict you emit is load-bearing. Review the FULL cumulative PR diff (base..head).
@@ -82,6 +88,17 @@ jobs:
             - If you cannot verify a finding against the actual code, do NOT post it inline; at most raise it as an open question in the summary.
 
             Use `mcp__github_inline_comment__create_inline_comment` for inline comments on specific lines and `gh pr comment` for the summary. Post ALL human-facing review through those tools — never as a regular message.
+
+            ## Architecture / tech-debt lens — apply ONLY if "ARCH AUDIT" above is true (if false, skip this whole section and do nothing here)
+            In addition to the review above, look at the code THIS PR touches — the changed files plus the immediate design they sit in; do NOT scan the whole repo — and ask: is it shaped this way because of legacy carryover or a shortcut, and is there a cleaner, best-practice shape? Use a deepening rubric: prefer deeper modules (simple interface over complex implementation), lower coupling, higher testability, fewer leaky abstractions. Two outcomes, BOTH strictly non-blocking:
+            - (a) The PR itself adds or perpetuates debt (new code takes a shortcut, or extends a legacy pattern instead of fixing it) → post a 🟡 inline comment proposing the concrete better shape. Do not block.
+            - (b) The touched code sits in PRE-EXISTING legacy debt bigger than this PR → file ONE tracked issue (rules below) instead of asking this PR to fix it.
+            Issue-filing rules for (b):
+            - Only when REVIEW ROUND is "first"; on subsequent rounds, file nothing.
+            - At most ONE issue per PR. If there are more, file the single highest-value one and list the rest in the summary as "+N more debt candidates".
+            - DEDUP first: run `gh issue list --state all --label audit:claude --search "<fingerprint keywords>"`. Skip if any OPEN or CLOSED issue shares the fingerprint (closed = already triaged or rejected → never re-file). Also skip if the debt is already documented as an accepted deferral in CLAUDE.md or repo docs.
+            - Create with: `gh issue create --label tech-debt --label audit:claude --title "[tech-debt] <area>: <one-line>" --body "<body>"`. The body MUST contain, on its own line, `<!-- audit-fp: <path-or-area>|<short-pattern-key> -->`, plus the concrete file:line evidence and the proposed better shape. Same verification bar as the review — only file what the actual code proves.
+            This lens NEVER sets blocking=true and NEVER changes owner_reserved; the verdict below is driven solely by the review focus above.
 
             ## Gate verdict (REQUIRED final action)
             Your FINAL action MUST be a single Write tool call that writes this exact JSON to `claude-verdict.json` in the repository root (the merge gate reads this file; humans read your inline comments + summary):

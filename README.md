@@ -135,6 +135,7 @@ always fails its own `claude-gate`. Therefore:
 | `model` | no | `opus` | Claude model (`sonnet` if you hit the weekly cap) |
 | `same_repo_only` | no | `false` | PUBLIC repos: skip fork PRs (no secrets on forks) |
 | `owner_handle` | no | `filiptrivan` | GitHub handle @mentioned on owner-reserved escalation |
+| `arch_audit` | no | `false` | Opt-in: adds a non-blocking architecture / tech-debt lens on the touched code. In-PR debt → 🟡 comment; bigger pre-existing legacy → one tracked `tech-debt`+`audit:claude` issue (first round only, deduped on open+closed fingerprints). Never affects the verdict. Requires the `tech-debt` and `audit:claude` labels to exist in the caller repo. |
 
 Secret: `CLAUDE_CODE_OAUTH_TOKEN` (passed by the caller from its own repo secret).
 
