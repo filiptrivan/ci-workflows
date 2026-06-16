@@ -142,10 +142,35 @@ always fails its own `claude-gate`. Therefore:
 | `same_repo_only` | no | `false` | PUBLIC repos: skip fork PRs (no secrets on forks) |
 | `owner_handle` | no | `filiptrivan` | GitHub handle @mentioned on owner-reserved escalation |
 | `arch_audit` | no | `true` | **On by default.** Non-blocking architecture / tech-debt lens on the touched code. In-PR debt → 🟡 comment; bigger pre-existing legacy → one tracked `tech-debt`+`audit:claude` issue (first round only, deduped on open+closed fingerprints). Never affects the verdict. **Requires the `tech-debt` and `audit:claude` labels in the caller repo** (runbook step 1). Set `false` to disable per caller. |
+| `cross_repo` | no | `""` | Opt-in cross-repo contract check (prose): this repo's contract surface + which sibling to grep for consumer impact when the diff touches it. Empty = off. Findings → PR **summary only**. See [Cross-repo contract check](#cross-repo-contract-check-optional). |
+| `cross_repo_private_sibling` | no | `""` | `owner/repo` of a PRIVATE sibling, checked out read-only via the `CROSS_REPO_DEPLOY_KEY` secret into `.cross-repo/<owner>/<repo>`. |
+| `cross_repo_public_sibling` | no | `""` | `owner/repo` of a PUBLIC sibling, checked out (no key) into `.cross-repo/<owner>/<repo>`. |
 
-Secret: `CLAUDE_CODE_OAUTH_TOKEN` (passed by the caller from its own repo secret).
+Secrets: `CLAUDE_CODE_OAUTH_TOKEN` (required); `CROSS_REPO_DEPLOY_KEY` (optional — read-only SSH
+deploy key for the private sibling, only when `cross_repo_private_sibling` is set). Both passed by
+the caller from its own repo secrets.
 
 ---
+
+## Cross-repo contract check (optional)
+
+`cross_repo` lets the review read a **sibling** repo to catch contract breakage (e.g. a backend DTO
+change that breaks the storefront consumer). The sibling is checked out read-only under
+`.cross-repo/<owner>/<repo>`; the reviewer greps it **only when the diff touches the contract surface**
+(prose in `cross_repo`), and posts findings in the PR **summary** (inline can't target another repo).
+
+**Private sibling — set up a read-only deploy key (no GitHub App needed):**
+```bash
+# read-only keypair; PUBLIC key -> deploy key on the SIBLING, PRIVATE key -> secret in THIS repo:
+ssh-keygen -t ed25519 -N "" -f /tmp/k -C "claude-gate cross-repo read"
+gh repo deploy-key add /tmp/k.pub -R <owner>/<sibling> --title "claude-gate cross-repo read"   # read-only (no --allow-write)
+gh secret set CROSS_REPO_DEPLOY_KEY -R <owner>/<this-repo> < /tmp/k
+rm -f /tmp/k /tmp/k.pub
+```
+Then in the caller set `cross_repo` (prose), `cross_repo_private_sibling: <owner>/<sibling>`, and pass
+`CROSS_REPO_DEPLOY_KEY` in `secrets:`. A **public** sibling needs no key — just set
+`cross_repo_public_sibling`. Each key is scoped to exactly one repo, read-only; works cleanly when a
+caller has a single private sibling (one deploy key in the job → no SSH-agent key ambiguity).
 
 ## Releasing changes (maintainers only)
 

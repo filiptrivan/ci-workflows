@@ -33,9 +33,27 @@ on:
         required: false
         type: boolean
         default: true
+      cross_repo:
+        description: "Opt-in cross-repo contract check. Prose: this repo's contract surface + which checked-out sibling to grep for consumer impact when the diff touches it. Empty = disabled."
+        required: false
+        type: string
+        default: ""
+      cross_repo_private_sibling:
+        description: "owner/repo of a PRIVATE sibling to check out read-only via CROSS_REPO_DEPLOY_KEY (the other side of the API contract). Empty = none."
+        required: false
+        type: string
+        default: ""
+      cross_repo_public_sibling:
+        description: "owner/repo of a PUBLIC sibling to check out (no key needed). Empty = none."
+        required: false
+        type: string
+        default: ""
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
+      CROSS_REPO_DEPLOY_KEY:
+        description: "Read-only SSH deploy key for the private sibling (only needed when cross_repo_private_sibling is set)."
+        required: false
 
 jobs:
   claude-review:
@@ -54,6 +72,26 @@ jobs:
         with:
           fetch-depth: 1
 
+      # Cross-repo contract check (opt-in): check the sibling(s) out read-only so the reviewer
+      # can grep them for consumer impact. Cheap shallow clone here; the EXPENSIVE Opus reading
+      # is gated in the prompt (the reviewer only greps when the diff touches the contract surface).
+      - name: Checkout private sibling (cross-repo)
+        if: inputs.cross_repo_private_sibling != ''
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: ${{ inputs.cross_repo_private_sibling }}
+          ssh-key: ${{ secrets.CROSS_REPO_DEPLOY_KEY }}
+          path: .cross-repo/${{ inputs.cross_repo_private_sibling }}
+          fetch-depth: 1
+
+      - name: Checkout public sibling (cross-repo)
+        if: inputs.cross_repo_public_sibling != ''
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: ${{ inputs.cross_repo_public_sibling }}
+          path: .cross-repo/${{ inputs.cross_repo_public_sibling }}
+          fetch-depth: 1
+
       - name: Run Claude Code Review
         id: review
         continue-on-error: true
@@ -64,12 +102,15 @@ jobs:
           # does not surface --json-schema structured_output); the gate step reads that file.
           # arch_audit gates TWO things that must move together: the gh-issue tools + turn bump
           # here, and the "Architecture / tech-debt lens" prompt section below. Edit them as a pair.
-          claude_args: "--model ${{ inputs.model }} --max-turns ${{ inputs.arch_audit && '25' || '20' }} --allowed-tools \"mcp__github_inline_comment__create_inline_comment,Write,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)${{ inputs.arch_audit && ',Bash(gh issue list:*),Bash(gh issue create:*),Bash(gh issue edit:*),Bash(gh issue view:*)' || '' }}\""
+          # cross_repo likewise gates a trio: Read/Grep + turn bump here, the sibling-checkout
+          # steps above, and the "Cross-repo contract check" prompt section below.
+          claude_args: "--model ${{ inputs.model }} --max-turns ${{ inputs.cross_repo != '' && '30' || (inputs.arch_audit && '25' || '20') }} --allowed-tools \"mcp__github_inline_comment__create_inline_comment,Write,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)${{ inputs.arch_audit && ',Bash(gh issue list:*),Bash(gh issue create:*),Bash(gh issue edit:*),Bash(gh issue view:*)' || '' }}${{ inputs.cross_repo != '' && ',Read,Grep' || '' }}\""
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
             REVIEW ROUND: ${{ (github.event.action == 'opened' || github.event.action == 'ready_for_review') && 'first' || 'subsequent' }}
             ARCH AUDIT: ${{ inputs.arch_audit }}
+            CROSS-REPO: ${{ inputs.cross_repo != '' && 'enabled' || 'disabled' }}
 
             You are the autonomous review gate for this repository. Routine PRs have NO required human
             reviewer, so the verdict you emit is load-bearing. Review the FULL cumulative PR diff (base..head).
@@ -101,6 +142,10 @@ jobs:
             - DEDUP first: run `gh issue list --state all --label audit:claude --search "<fingerprint keywords>"`. Skip if any OPEN or CLOSED issue shares the fingerprint (closed = already triaged or rejected → never re-file). Also skip if the debt is already documented as an accepted deferral in CLAUDE.md or repo docs.
             - Create with: `gh issue create --label tech-debt --label audit:claude --title "[tech-debt] <area>: <one-line>" --body "<body>"`. The body MUST contain, on its own line, `<!-- audit-fp: <path-or-area>|<short-pattern-key> -->`, plus the concrete file:line evidence and the proposed better shape. Same verification bar as the review — only file what the actual code proves.
             This lens NEVER sets blocking=true and NEVER changes owner_reserved; the verdict below is driven solely by the review focus above.
+
+            ## Cross-repo contract check — apply ONLY if "CROSS-REPO" above is enabled (if disabled, skip this whole section and do nothing here)
+            ${{ inputs.cross_repo }}
+            The sibling repo(s) are checked out read-only under `.cross-repo/<owner>/<repo>` — use Read/Grep there to verify consumer impact. Do this ONLY when the diff actually touches the contract surface described above; otherwise skip (don't spend turns spelunking siblings on unrelated PRs). Cross-repo findings go in the `gh pr comment` SUMMARY ONLY — inline comments cannot target another repo's files. A broken downstream consumer is a 🔴 Important summary finding; it changes the verdict only if the review focus marks the contract as a block-class item.
 
             ## Gate verdict (REQUIRED final action)
             Your FINAL action MUST be a single Write tool call that writes this exact JSON to `claude-verdict.json` in the repository root (the merge gate reads this file; humans read your inline comments + summary):
