@@ -1,0 +1,57 @@
+name: Claude Bot (reusable)
+
+# Reusable on-demand @claude bot for PRs. A maintainer types @claude in a PR comment or
+# review to get a sanity-review — primarily on external fork PRs, which the auto gate
+# (claude-gate.yml, same_repo_only) deliberately skips because fork PRs run without secrets.
+#
+# Split mirrors claude-gate.yml: per-repo plumbing (the on: triggers, permissions,
+# concurrency, secret) stays in each caller; ALL shared security hardening (the maintainer
+# author_association gate + the read-and-comment-only tool scope) lives HERE so it stays in
+# sync across repos and a copy-pasted caller cannot weaken or forget it. Permissions are
+# granted by the CALLER job.
+
+on:
+  workflow_call:
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+jobs:
+  claude:
+    # PUBLIC REPO SECURITY: the gate lives HERE (not the caller) so it can't drift. Only
+    # maintainers (OWNER/MEMBER/COLLABORATOR) can trigger @claude, so an external contributor
+    # cannot run the bot — which holds your secret + a write token — on their own fork PR. A
+    # caller that mis-triggers (wrong event, no @claude check) yields a null/non-maintainer
+    # association → denied (fail closed). Together with the read-and-comment-only tool scope
+    # below, the bot can review untrusted code but has NO tool to exfiltrate secrets or push.
+    # Do NOT relax this gate or broaden the tools on a public repo.
+    if: >-
+      (github.event_name == 'issue_comment' &&
+        contains(github.event.comment.body, '@claude') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+      ||
+      (github.event_name == 'pull_request_review_comment' &&
+        contains(github.event.comment.body, '@claude') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+      ||
+      (github.event_name == 'pull_request_review' &&
+        contains(github.event.review.body, '@claude') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code (review + comment only)
+        uses: anthropics/claude-code-action@d5726de019ec4498aa667642bc3a80fca83aa102 # v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # SECURITY (public repo): no general Bash, no Write/Edit, no Read of checked-out
+          # files, no build/run of PR code. Claude can only read the PR diff and post
+          # comments — including GitHub ```suggestion blocks the maintainer one-click-applies,
+          # so in-place fixes don't require giving the bot push capability. Even a
+          # prompt-injected fork diff has no tool to leak the token or push.
+          claude_args: '--allowed-tools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'
