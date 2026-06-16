@@ -1,0 +1,73 @@
+name: Claude Weekly Audit (reusable)
+
+# Retrospective backstop to the per-PR gate. The per-PR gate is fast and reviews one diff at a
+# time; this does a deeper, broader pass over recently-merged code to catch false negatives —
+# especially hard-block-class misses and cross-PR interactions. Runs on the default branch
+# (trusted context), so it gets broader tools than the PR gate. Opens ONE issue if it finds
+# something; stays silent otherwise.
+
+on:
+  workflow_call:
+    inputs:
+      review_spec:
+        description: "Same review_spec as the gate caller (block class etc.)"
+        required: true
+        type: string
+      model:
+        required: false
+        type: string
+        default: "opus"
+      days:
+        description: "How many days back to audit"
+        required: false
+        type: number
+        default: 7
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+
+      - name: Run Claude Weekly Audit
+        uses: anthropics/claude-code-action@d5726de019ec4498aa667642bc3a80fca83aa102 # v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: '--model ${{ inputs.model }} --max-turns 40 --allowed-tools "Read,Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh issue list:*),Bash(gh issue create:*)"'
+          prompt: |
+            REPO: ${{ github.repository }}
+
+            You are a RETROSPECTIVE BACKSTOP to the per-PR review gate. The team skipped calibration,
+            so the fast per-PR gate has no human net — your job is to catch the false negatives it let
+            through. Be rigorous; this is the last line of defense.
+
+            Scope: every PR merged to the default branch in the last ${{ inputs.days }} days. Find them
+            with `gh pr list --state merged --search "merged:>=<date>" --json number,title,mergedAt,mergeCommit`
+            (compute the date from today minus ${{ inputs.days }} days) and read each diff with `gh pr diff <n>`
+            and `git show`. Read surrounding files with Read when you need context.
+
+            Review HARDER and BROADER than a single-PR review can:
+            - The repo's hard-block class — these are the expensive misses to hunt for:
+            ${{ inputs.review_spec }}
+            - Cross-PR interactions: a change in PR A that breaks an assumption from PR B.
+            - Subtle correctness bugs, missed edge cases, and regressions a fast diff-only review skips.
+
+            ## Verification bar
+            Every finding MUST cite a concrete file:line that proves it and explain why it is a real
+            problem. Do not report style, conventions, or speculative concerns — only genuine,
+            verifiable defects. If you cannot prove it, drop it.
+
+            ## Output
+            - First check `gh issue list --search "Weekly gate-escape audit in:title" --state open` and do
+              NOT open a duplicate for the same window.
+            - If you found genuine issues: open ONE issue with `gh issue create`, titled
+              "Weekly gate-escape audit (<date range>): N finding(s)", body = a markdown checklist, each
+              item `- [ ] **<severity>** <file:line> — <problem> — <suggested fix>`. Add `--label gate-escape`.
+            - If you found nothing substantive: do NOTHING. Open no issue, write no comment. Silence is success.
