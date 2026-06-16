@@ -1,0 +1,138 @@
+name: Claude Gate (reusable)
+
+# Reusable AI review gate. Callers trigger on pull_request and pass their per-repo
+# review_spec. All shared plumbing (hardened review prompt, verdict transport via
+# claude-verdict.json, claude-gate check creation, fail-closed, escalate-once) lives here
+# so it stays in sync across repos. Per-repo: review_spec, same_repo_only, the CODEOWNERS
+# file + ruleset (GitHub-native, stay in each repo), and the secret.
+
+on:
+  workflow_call:
+    inputs:
+      review_spec:
+        description: "Per-repo block class + owner-reserved categories + conventions + skip globs"
+        required: true
+        type: string
+      model:
+        description: "Claude model"
+        required: false
+        type: string
+        default: "opus"
+      same_repo_only:
+        description: "Public repos: skip fork PRs (they run without secrets)"
+        required: false
+        type: boolean
+        default: false
+      owner_handle:
+        description: "GitHub handle @mentioned on owner-reserved escalation"
+        required: false
+        type: string
+        default: "filiptrivan"
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+jobs:
+  claude-review:
+    # Skip drafts always; on public repos (same_repo_only) also skip fork PRs — they run
+    # without secrets, so the gate can't authenticate or post; external PRs get maintainer
+    # review + admin-bypass instead. Permissions are granted by the CALLER job.
+    if: >-
+      github.event.pull_request.draft == false &&
+      (inputs.same_repo_only == false ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code Review
+        id: review
+        continue-on-error: true
+        uses: anthropics/claude-code-action@d5726de019ec4498aa667642bc3a80fca83aa102 # v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Verdict transported via a Write to claude-verdict.json (this pinned action build
+          # does not surface --json-schema structured_output); the gate step reads that file.
+          claude_args: '--model ${{ inputs.model }} --max-turns 20 --allowed-tools "mcp__github_inline_comment__create_inline_comment,Write,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+            REVIEW ROUND: ${{ (github.event.action == 'opened' || github.event.action == 'ready_for_review') && 'first' || 'subsequent' }}
+
+            You are the autonomous review gate for this repository. Routine PRs have NO required human
+            reviewer, so the verdict you emit is load-bearing. Review the FULL cumulative PR diff (base..head).
+            Follow the conventions in CLAUDE.md.
+
+            ## This repository's review focus (block class, owner-reserved, conventions, skip list)
+            ${{ inputs.review_spec }}
+
+            ## Severity & output discipline
+            - Tag every finding 🔴 Important (should be fixed before merge) or 🟡 Nit (minor, non-blocking).
+            - Post at most 5 🟡 Nits inline. If there are more, give a "+N more nits" count in the summary instead.
+            - Open the summary with a one-line tally like "2 important, 4 nits", and lead with "No blocking issues" when there are no Important findings.
+            - If REVIEW ROUND is "subsequent": post 🔴 Important findings ONLY — suppress all 🟡 Nits, lead with
+              "✓ previous findings addressed" where true, and note "(nits suppressed on re-review)".
+
+            ## Verification bar — post only what you can prove
+            - Every behavior or bug claim must cite the concrete file:line that proves it, not an inference from a name or convention.
+            - If you cannot verify a finding against the actual code, do NOT post it inline; at most raise it as an open question in the summary.
+
+            Use `mcp__github_inline_comment__create_inline_comment` for inline comments on specific lines and `gh pr comment` for the summary. Post ALL human-facing review through those tools — never as a regular message.
+
+            ## Gate verdict (REQUIRED final action)
+            Your FINAL action MUST be a single Write tool call that writes this exact JSON to `claude-verdict.json` in the repository root (the merge gate reads this file; humans read your inline comments + summary):
+            {"blocking": <bool>, "owner_reserved": <bool>, "owner_reasons": [<strings>], "summary": "<one line, matches your PR summary tally>"}
+            - "blocking": true ONLY for a hard-block item from "This repository's review focus" above — high bar, objectively checkable. Everything else (style, conventions, speculative security, naming, all 🟡 Nits) is NON-blocking → blocking=false.
+            - "owner_reserved": true if the diff touches an owner-reserved area from "This repository's review focus" above. Put concrete reasons in owner_reasons.
+            Write claude-verdict.json even when there are no findings (blocking=false, owner_reserved=false). This file is mandatory — a missing file fails the gate closed.
+
+      - name: Post claude-gate check and escalation
+        if: always()
+        env:
+          REVIEW_OUTCOME: ${{ steps.review.outcome }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          OWNER_HANDLE: ${{ inputs.owner_handle }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+
+          blocking="true"
+          owner_reserved="false"
+          summary="Gate could not evaluate (no verdict file written by the review). Failing closed - re-run the review."
+          reasons=""
+
+          VERDICT_FILE="$GITHUB_WORKSPACE/claude-verdict.json"
+          if [ "$REVIEW_OUTCOME" = "success" ] && [ -f "$VERDICT_FILE" ] && jq -e . "$VERDICT_FILE" >/dev/null 2>&1; then
+            # Compare booleans explicitly. Do NOT use `.blocking // true`: jq's `//` treats
+            # `false` as empty, so a correct `false` would flip to `true` and never pass.
+            [ "$(jq -r '.blocking' "$VERDICT_FILE")" = "false" ] && blocking="false" || blocking="true"
+            [ "$(jq -r '.owner_reserved' "$VERDICT_FILE")" = "true" ] && owner_reserved="true" || owner_reserved="false"
+            summary=$(jq -r '.summary // "No blocking issues."' "$VERDICT_FILE")
+            reasons=$(jq -r '(.owner_reasons // []) | map("- " + .) | join("\n")' "$VERDICT_FILE")
+          fi
+
+          conclusion="success"; title="No blocking issues"
+          if [ "$blocking" = "true" ]; then conclusion="failure"; title="Blocking issues found"; fi
+
+          gh api -X POST "repos/$REPO/check-runs" \
+            -f name=claude-gate \
+            -f head_sha="$HEAD_SHA" \
+            -f status=completed \
+            -f conclusion="$conclusion" \
+            -f "output[title]=$title" \
+            -f "output[summary]=$summary"
+
+          if [ "$owner_reserved" = "true" ]; then
+            already=$(gh pr view "$PR" --json labels --jq '.labels[].name' | grep -Fx awaiting-owner || true)
+            if [ -z "$already" ]; then
+              gh pr edit "$PR" --add-label awaiting-owner
+              printf '@%s owner-reserved change - needs your sign-off before merge:\n\n%s\n' "$OWNER_HANDLE" "$reasons" \
+                | gh pr comment "$PR" --body-file -
+            fi
+          fi
