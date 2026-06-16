@@ -1,8 +1,13 @@
 name: Claude Bot (reusable)
 
 # Reusable on-demand @claude bot for PRs. A maintainer types @claude in a PR comment or
-# review to get a sanity-review — primarily on external fork PRs, which the auto gate
-# (claude-gate.yml, same_repo_only) deliberately skips because fork PRs run without secrets.
+# review to get a sanity-review on demand (e.g. a question mid-review on your own or a
+# collaborator's PR).
+#
+# SAME-REPO PRs ONLY — this CANNOT review external fork PRs. GitHub withholds repository
+# secrets from any fork-PR run (only GITHUB_TOKEN is passed), so the action has no
+# CLAUDE_CODE_OAUTH_TOKEN to authenticate with and fails at auth. Fork PRs get manual (local)
+# review instead — the same secret limitation the auto gate sidesteps via same_repo_only.
 #
 # Split mirrors claude-gate.yml: per-repo plumbing (the on: triggers, permissions,
 # concurrency, secret) stays in each caller; ALL shared security hardening (the maintainer
@@ -18,12 +23,14 @@ on:
 
 jobs:
   claude:
-    # PUBLIC REPO SECURITY: the gate lives HERE (not the caller) so it can't drift. Only
-    # maintainers (OWNER/MEMBER/COLLABORATOR) can trigger @claude, so an external contributor
-    # cannot run the bot — which holds your secret + a write token — on their own fork PR. A
-    # caller that mis-triggers (wrong event, no @claude check) yields a null/non-maintainer
-    # association → denied (fail closed). Together with the read-and-comment-only tool scope
-    # below, the bot can review untrusted code but has NO tool to exfiltrate secrets or push.
+    # PUBLIC REPO SECURITY — this gate controls WHO can trigger (not what the bot reads). It
+    # lives HERE (not the caller) so it can't drift. On a public repo anyone can comment on
+    # your PRs; without this gate a random user could @claude a SAME-REPO PR and run the bot
+    # (which on same-repo runs holds your CLAUDE_CODE_OAUTH_TOKEN + a pull-requests:write
+    # token) via their own comment text. Restricting triggers to maintainers
+    # (OWNER/MEMBER/COLLABORATOR) stops that. A caller that mis-triggers (wrong event, no
+    # @claude check) yields a null/non-maintainer association → denied (fail closed).
+    # This gate does NOT make untrusted PR *content* safe — that is the tool scope's job below.
     # Do NOT relax this gate or broaden the tools on a public repo.
     if: >-
       (github.event_name == 'issue_comment' &&
@@ -49,9 +56,11 @@ jobs:
         uses: anthropics/claude-code-action@d5726de019ec4498aa667642bc3a80fca83aa102 # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # SECURITY (public repo): no general Bash, no Write/Edit, no Read of checked-out
-          # files, no build/run of PR code. Claude can only read the PR diff and post
-          # comments — including GitHub ```suggestion blocks the maintainer one-click-applies,
-          # so in-place fixes don't require giving the bot push capability. Even a
-          # prompt-injected fork diff has no tool to leak the token or push.
+          # SECURITY — tool scope = blast radius from what the bot READS. The gate above limits
+          # who triggers; this limits what an injected line in the reviewed diff can do. No
+          # general Bash, no Write/Edit, no build/run of PR code: Claude can only read the PR
+          # diff and post comments — including GitHub ```suggestion blocks the maintainer
+          # one-click-applies, so in-place fixes need no push capability. On same-repo runs the
+          # env holds the live token + a write GITHUB_TOKEN, so a prompt injection in the diff
+          # must have NO tool to reach them. Do NOT broaden these tools on a public repo.
           claude_args: '--allowed-tools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'
