@@ -27,12 +27,18 @@ shared logic.
 
 ## Runbook: add the gate to a new repo
 
-### 1. Set the secret (one-time, per repo)
+### 1. Set the secret + labels (one-time, per repo)
 Personal-account repos have no org secrets, so each repo needs its own. From your terminal
 (so the token isn't echoed anywhere):
 ```bash
 gh secret set CLAUDE_CODE_OAUTH_TOKEN -R <owner>/<repo>
 # paste the same token the other repos use
+```
+`arch_audit` is **on by default**, and its lens files `tech-debt`+`audit:claude` issues — create
+those labels (or its `gh issue` calls fail), or set `arch_audit: false` in the caller to disable:
+```bash
+gh label create tech-debt     -R <owner>/<repo> --color fbca04 --description "Architectural debt or best-practice gap"
+gh label create "audit:claude" -R <owner>/<repo> --color 5319e7 --description "Filed by the Claude review gate (arch_audit lens)"
 ```
 
 ### 2. Add the caller — `.github/workflows/claude-review.yml`
@@ -135,7 +141,7 @@ always fails its own `claude-gate`. Therefore:
 | `model` | no | `opus` | Claude model (`sonnet` if you hit the weekly cap) |
 | `same_repo_only` | no | `false` | PUBLIC repos: skip fork PRs (no secrets on forks) |
 | `owner_handle` | no | `filiptrivan` | GitHub handle @mentioned on owner-reserved escalation |
-| `arch_audit` | no | `false` | Opt-in: adds a non-blocking architecture / tech-debt lens on the touched code. In-PR debt → 🟡 comment; bigger pre-existing legacy → one tracked `tech-debt`+`audit:claude` issue (first round only, deduped on open+closed fingerprints). Never affects the verdict. Requires the `tech-debt` and `audit:claude` labels to exist in the caller repo. |
+| `arch_audit` | no | `true` | **On by default.** Non-blocking architecture / tech-debt lens on the touched code. In-PR debt → 🟡 comment; bigger pre-existing legacy → one tracked `tech-debt`+`audit:claude` issue (first round only, deduped on open+closed fingerprints). Never affects the verdict. **Requires the `tech-debt` and `audit:claude` labels in the caller repo** (runbook step 1). Set `false` to disable per caller. |
 
 Secret: `CLAUDE_CODE_OAUTH_TOKEN` (passed by the caller from its own repo secret).
 
@@ -158,7 +164,7 @@ on `main`; intentional history changes require disabling it first.
 - **Fail-closed is intentional:** a missing/unparseable verdict, an action error, or a flake all
   produce a red gate, never a silent green.
 - **`arch_audit` policy is hardcoded** (labels `tech-debt`/`audit:claude`, 1-issue/PR cap, fingerprint
-  format) in the shared prompt — fine while one repo opts in. Extract those values to inputs (or a
-  per-repo `audit_spec` symmetric with `review_spec`) the first time a *second* consumer enables
-  `arch_audit` and needs different values. It's also gated in two places (the `gh issue` tools/turn
-  bump in `claude_args` and the prompt section) — edit them as a pair.
+  format) in the shared prompt — and it's now **on by default for every caller**. Extract those values
+  to inputs (or a per-repo `audit_spec` symmetric with `review_spec`) the first time any caller needs
+  different values. It's also gated in two places (the `gh issue` tools/turn bump in `claude_args` and
+  the prompt section) — edit them as a pair.

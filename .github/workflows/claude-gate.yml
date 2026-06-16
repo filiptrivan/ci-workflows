@@ -29,10 +29,10 @@ on:
         type: string
         default: "filiptrivan"
       arch_audit:
-        description: "Opt-in: add a non-blocking architecture / tech-debt lens on touched code that may file tracked tech-debt issues"
+        description: "On by default: non-blocking architecture / tech-debt lens on touched code that may file tracked tech-debt issues. Set false to disable per caller."
         required: false
         type: boolean
-        default: false
+        default: true
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
