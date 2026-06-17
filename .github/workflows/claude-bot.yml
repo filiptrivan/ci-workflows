@@ -31,7 +31,7 @@ jobs:
     # (OWNER/MEMBER/COLLABORATOR) stops that. A caller that mis-triggers (wrong event, no
     # @claude check) yields a null/non-maintainer association → denied (fail closed).
     # This gate does NOT make untrusted PR *content* safe — that is the tool scope's job below.
-    # Do NOT relax this gate or broaden the tools on a public repo.
+    # Do NOT relax this gate on a public repo.
     if: >-
       (github.event_name == 'issue_comment' &&
         contains(github.event.comment.body, '@claude') &&
