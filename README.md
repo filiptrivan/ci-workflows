@@ -180,6 +180,13 @@ caller has a single private sibling (one deploy key in the job → no SSH-agent 
 (`git tag -f v1 && git push -f origin v1`). The anti-footgun ruleset blocks force-push/deletion
 on `main`; intentional history changes require disabling it first.
 
+**⚠️ `v1` is a *moving* tag — resync before you move it.** A plain `git pull`/`git fetch` **never**
+updates an existing local tag, so after each release your local `v1` silently goes stale (still points
+at the previous commit) while the remote `v1` has advanced. Force-pushing from a stale checkout
+(`git tag -f v1 && git push -f origin v1`) would shove the remote `v1` **backwards** and break every
+caller pinned to `@v1`. Before releasing — or whenever local `v1` looks wrong — resync first: `git pull`
+then `git fetch --tags --force` (a plain pull won't update the tag).
+
 ### Gotchas when editing `claude-gate.yml`
 - **Verdict transport:** the pinned `claude-code-action` build does **not** surface
   `--json-schema` structured output, so the verdict is written to `claude-verdict.json` (via the
