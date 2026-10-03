@@ -628,7 +628,8 @@ function pointersIn(text, { repo, file, kind, previous = "" }) {
   for (const match of text.matchAll(SPAN)) {
     const content = match[2].trim();
     const before = text.slice(0, match.index);
-    const lead = before.trim() === "" ? `${previous.trimEnd()} ` : before;
+    // A comment line's own decoration (` * `, `// `, `# `) is not text before the pointer.
+    const lead = before.replace(/^[\s*#/]*/, "") === "" ? `${previous.trimEnd()} ` : before;
     const named = siblingPrefix && siblingPrefix.exec(lead)?.[1];
     const prefix = repo.config.self.includes(named) ? undefined : named;
     const afterSee = kind === "comment" && /\bsee\s+$/i.test(before);
@@ -654,7 +655,7 @@ function pointersIn(text, { repo, file, kind, previous = "" }) {
 
   const adrMentions = /(?:([\w.-]+?)(?:'s)?\s+)?\bADRs?[- ]?(\d{4})(?![-\d])((?:\s*(?:,|and|&|or|\/)\s*\d{4}(?![-\d]))*)/g;
   for (const match of masked.matchAll(adrMentions)) {
-    const atStart = !match[1] && masked.slice(0, match.index).trim() === "";
+    const atStart = !match[1] && masked.slice(0, match.index).replace(/^[\s*#/]*/, "") === "";
     const word = match[1] ?? (atStart ? previous.trim().split(/\s+/).at(-1)?.replace(/'s$/, "") : undefined);
     const prefix = word && repo.siblingNames().includes(word) ? word : undefined;
     const numbers = [match[2], ...(match[3].match(/\d{4}/g) ?? [])];

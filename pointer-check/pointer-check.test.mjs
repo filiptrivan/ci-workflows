@@ -409,3 +409,11 @@ test("a sibling prefix at the end of the previous line still prefixes the pointe
   });
   assert.deepEqual(check(dir).lines, []);
 });
+
+test("a wrapped prefix still counts inside a block comment whose lines start with an asterisk", () => {
+  const dir = repo({
+    ".pointer-check.jsonc": JSON.stringify({ siblings: { "pa-cms": ["../pa-cms"] } }),
+    "src/a.ts": "/**\n * The rank is ported from pa-cms\n * `Backend/Ranking.cs`, which we cannot import.\n */\nexport const a = 1;\n",
+  });
+  assert.deepEqual(check(dir).lines, []);
+});
