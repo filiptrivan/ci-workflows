@@ -280,8 +280,13 @@ class Repo {
     return MODULE_SUFFIXES.some((suffix) => this.fileSet.has(`${clean}${suffix}`));
   }
 
+  // A dot-led name with a second dot (`.spec.ts`) names a file-name suffix as often as a dotfile
+  // (`.postcssrc.json`), so any file ending in it counts.
   hasBaseName(name) {
-    return this.byBase.has(name) || this.dirsByBase.has(name);
+    if (this.byBase.has(name) || this.dirsByBase.has(name)) return true;
+    if (!/^\.[^.]+\./.test(name)) return false;
+    for (const base of this.byBase.keys()) if (base.endsWith(name)) return true;
+    return false;
   }
 
   // Per code file, the names its code uses (with comments and strings blanked, and, separately,

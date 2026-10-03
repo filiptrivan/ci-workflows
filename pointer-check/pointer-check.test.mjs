@@ -378,3 +378,12 @@ test("an extension is matched as written, so a member called `Sql` is not a .sql
   });
   assert.deepEqual(check(dir).lines, ["docs/live.md:1: `schema.sql` resolves to nothing"]);
 });
+
+test("a dot-led name is a file-name suffix too, so `.spec.ts` names a kind of file", () => {
+  const dir = repo({
+    "src/cart.spec.ts": "export {};\n",
+    "src/.postcssrc.json": "{}\n",
+    "docs/live.md": "Specs end in `.spec.ts`; the config is `.postcssrc.json`; `.e2e.ts` matches nothing.\n",
+  });
+  assert.deepEqual(check(dir).lines, ["docs/live.md:1: `.e2e.ts` resolves to nothing"]);
+});
