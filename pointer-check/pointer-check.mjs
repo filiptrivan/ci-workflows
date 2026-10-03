@@ -12,7 +12,10 @@
 //   a symbol          `Type.Member` or `name()` in backticks, or `see someName` in a comment;
 //                     resolves when a file that declares the type uses the member in its code
 //                     (strings and comments blanked); a library's type, used but never declared
-//                     here (`DateTime.UtcNow`), only needs its names used together in one file
+//                     here (`DateTime.UtcNow`), only needs its names used together in one file.
+//                     A lone name resolves on a declaration, a use in code, or a string that is
+//                     exactly the name (`["toLocaleString"]`), never a sentence that mentions it
+//                     (a test title that outlived a rename)
 //   an ADR number     ADR 0047, ADR-0047; resolves when exactly one docs/adr/ file has it, or
 //                     when the words beside it pick one of the files that share it
 //   any of the above prefixed with a sibling repo's name (`pa-cms/Backend/X.cs`, pa-cms `X.Y`,
@@ -55,8 +58,11 @@ const LANGUAGES = [
   { extensions: "ts tsx mts cts js jsx mjs cjs cs", scan: (text) => scanC(text, { slash: true }), names: true },
   { extensions: "scss less", scan: (text) => scanC(text, { slash: true }) },
   { extensions: "css", scan: (text) => scanC(text, {}) },
+  // `tsconfig.json`, `angular.json` and .NET's `appsettings.json` all take comments.
+  { extensions: "json jsonc json5", scan: (text) => scanC(text, { slash: true }) },
   { extensions: "sh bash zsh", scan: (text) => scanHash(text, {}), names: true },
-  { extensions: "yml yaml toml bats", scan: (text) => scanHash(text, {}) },
+  // A workflow's expressions call names (`always()`, `hashFiles()`) and its keys are names too.
+  { extensions: "yml yaml toml bats", scan: (text) => scanHash(text, {}), names: true },
   { extensions: "py", scan: (text) => scanHash(text, { python: true }), names: true },
   { extensions: "sql", scan: (text) => scanC(text, { dashes: true }), names: true },
   { extensions: "html", scan: (text) => scanMarkup(text), names: true },
@@ -89,14 +95,22 @@ const FILE_EXTENSIONS = new Set(
     "ini cfg conf config plist bin exe dll so dylib map snap tfvars tfstate local example sample"
   ).split(" "),
 );
-const NAME = /[A-Za-z_$][\w$]*/g;
+const NAME = new RegExp(IDENTIFIER, "g");
+const TYPE_KEYWORD = "(?:class|interface|record(?:\\s+(?:struct|class))?|struct)";
 // What a declared class, interface, record or struct extends or implements.
-const HERITAGE =
-  /\b(?:class|interface|record(?:\s+(?:struct|class))?|struct)\s+([A-Za-z_$][\w$]*)(?:<[^>{]*>)?(?:\([^)]*\))?\s*(?::|extends|implements)\s*([^{;=]+)/g;
+const HERITAGE = new RegExp(
+  `\\b${TYPE_KEYWORD}\\s+(${IDENTIFIER})(?:<[^>{]*>)?(?:\\([^)]*\\))?\\s*(?::|extends|implements)\\s*([^{;=]+)`,
+  "g",
+);
 // A name a file declares: a type, namespace, function or binding keyword before it, or a key that
 // opens an object type (`StorefrontProductDTO: {` in generated OpenAPI types).
-const DECLARATION =
-  /\b(?:class|interface|record(?:\s+(?:struct|class))?|struct|enum|type|namespace|module|function\*?|def|const|let|var)\s+([A-Za-z_$][\w$]*)|^\s*([A-Za-z_$][\w$]*)\??\s*:\s*\{/gm;
+const DECLARATION = new RegExp(
+  `\\b(?:${TYPE_KEYWORD}|enum|type|namespace|module|function\\*?|def|const|let|var)\\s+(${IDENTIFIER})|^\\s*(${IDENTIFIER})\\??\\s*:\\s*\\{`,
+  "gm",
+);
+// A C# partial type: a source generator may add members in a part no tracked file holds.
+const PARTIAL = new RegExp(`\\bpartial\\s+${TYPE_KEYWORD}\\s+(${IDENTIFIER})`, "g");
+const MAX_HERITAGE_DEPTH = 5;
 const STOPWORDS = new Set(
   "the and for its are was not but with from into that this than then them they our one all any can each has had have who why how what when where which while".split(
     " ",
@@ -290,14 +304,16 @@ class Repo {
   }
 
   // Per code file, the names its code uses (with comments and strings blanked, and, separately,
-  // with strings kept), the types it declares and what each of them extends. A name only a
-  // comment, a log message or a migration's column string still mentions is gone from code, which
-  // is how a rename is caught.
+  // with strings kept), the string literals that are exactly a name, the types it declares, which
+  // of them are partial, and what each extends. A name only a comment, a log message or a
+  // migration's column string still mentions is gone from code, which is how a rename is caught.
   get names() {
     if (!this._names) {
       const code = [];
-      const all = [];
+      const withStrings = [];
+      const literals = [];
       const declares = new Map();
+      const partials = new Set();
       const bases = new Map();
       this.scanned.forEach((file) => {
         const language = languageOf(file);
@@ -307,47 +323,47 @@ class Repo {
         const scanned = language.scan(text);
         const index = code.length;
         code.push(new Set(scanned.code.match(NAME) ?? []));
-        all.push(new Set(scanned.withStrings.match(NAME) ?? []));
+        withStrings.push(new Set(scanned.withStrings.match(NAME) ?? []));
+        literals.push(new Set(scanned.literals));
         for (const match of scanned.code.matchAll(DECLARATION)) push(declares, match[1] ?? match[2], index);
+        for (const match of scanned.code.matchAll(PARTIAL)) partials.add(match[1]);
         for (const match of scanned.code.matchAll(HERITAGE)) {
           for (const base of match[2].split(/,|\bextends\b|\bimplements\b/)) {
-            const name = base.trim().match(/^[A-Za-z_$][\w$]*/)?.[0];
+            const name = base.trim().match(new RegExp(`^${IDENTIFIER}`))?.[0];
             if (name) push(bases, match[1], name);
           }
         }
       });
-      this._names = { code, all, declares, bases };
+      this._names = { code, withStrings, literals, declares, partials, bases };
     }
     return this._names;
   }
 
   // `Type.member`: true when a file declaring the type, or one of ours it extends, uses the member;
   // undefined when the type is not ours at all. A type extending one we do not declare (Spiderly's
-  // `BusinessObject<long>`) may inherit the member from it, so there it is enough that our code
-  // uses the type and the member together somewhere.
+  // `BusinessObject<long>`), or a partial one, may get the member from code no tracked file holds,
+  // so there it is enough that our code uses the type and the member together somewhere.
   memberOf(type, member, depth = 0) {
-    const { code, declares, bases } = this.names;
+    const { code, declares, partials, bases } = this.names;
     const files = declares.get(type);
     if (!files) return undefined;
     if (files.some((file) => code[file].has(member))) return true;
-    let outside = false;
-    for (const base of depth < 5 ? (bases.get(type) ?? []) : []) {
+    let unseen = partials.has(type);
+    for (const base of depth < MAX_HERITAGE_DEPTH ? (bases.get(type) ?? []) : []) {
       const found = this.memberOf(base, member, depth + 1);
       if (found) return true;
-      if (found === undefined) outside = true;
+      if (found === undefined) unseen = true;
     }
-    return outside && usedTogether(code, [type, member]);
+    return unseen && usedTogether(code, [type, member]);
   }
 
   // Only the head and its first member are checked: `Category.Products.Any()` goes on into a
   // library's API, which no declaration of ours can vouch for.
   resolveSymbol(text) {
     const [head, member] = text.replace(/\(.*\)$/, "").split(".");
-    const { all, declares } = this.names;
-    if (!member) return Number(declares.has(head) || usedTogether(all, [head]));
-    const ours = this.memberOf(head, member);
-    // A library's type (`DateTime.UtcNow`, `JSON.parse`) needs only its names used together.
-    return Number(ours ?? usedTogether(all, [head, member]));
+    const { code, withStrings, literals, declares } = this.names;
+    if (!member) return Number(declares.has(head) || usedTogether(code, [head]) || usedTogether(literals, [head]));
+    return Number(this.memberOf(head, member) ?? usedTogether(withStrings, [head, member]));
   }
 
   get adrs() {
@@ -401,16 +417,16 @@ function readText(path) {
   }
 }
 
-// Each scanner splits a code file into its comments, one entry per line a comment touches, and
-// its code with every comment and string literal blanked. They are approximate on purpose: a
-// mis-scanned line costs a missed pointer at worst.
-
 function lineStarts(text) {
   const starts = [0];
   for (let i = 0; i < text.length; i++) if (text[i] === "\n") starts.push(i + 1);
   return starts;
 }
 
+// What every scanner returns, from the comment and string ranges it found: the comments, one
+// entry per line a comment touches; the code with every comment and string blanked; the code with
+// only the comments blanked; and the string literals that are exactly a name. Scanners are
+// approximate on purpose: a mis-scanned line costs a missed pointer at worst.
 function collect(text, ranges, strings = []) {
   const starts = lineStarts(text);
   const comments = [];
@@ -438,7 +454,10 @@ function collect(text, ranges, strings = []) {
     }
   }
   code += text.slice(last);
-  return { comments, code, withStrings };
+  const literals = strings
+    .map(([from, to]) => /^(["'`])(.*)\1$/s.exec(text.slice(from, to))?.[2])
+    .filter((inner) => inner !== undefined && new RegExp(`^${IDENTIFIER}$`).test(inner));
+  return { comments, code, withStrings, literals };
 }
 
 function upperBound(sorted, value) {
@@ -628,10 +647,7 @@ function pointersIn(text, { repo, file, kind, previous = "" }) {
   for (const match of text.matchAll(SPAN)) {
     const content = match[2].trim();
     const before = text.slice(0, match.index);
-    // A comment line's own decoration (` * `, `// `, `# `) is not text before the pointer.
-    const lead = before.replace(/^[\s*#/]*/, "") === "" ? `${previous.trimEnd()} ` : before;
-    const named = siblingPrefix && siblingPrefix.exec(lead)?.[1];
-    const prefix = repo.config.self.includes(named) ? undefined : named;
+    const prefix = prefixBefore(before, previous, repo, siblingPrefix);
     const afterSee = kind === "comment" && /\bsee\s+$/i.test(before);
     const pointer = classify(content, { repo, file, prefix, bareSymbols: afterSee });
     if (pointer) pointers.push({ column: match.index, ...pointer });
@@ -653,29 +669,37 @@ function pointersIn(text, { repo, file, kind, previous = "" }) {
     }
   }
 
-  const adrMentions = /(?:([\w.-]+?)(?:'s)?\s+)?\bADRs?[- ]?(\d{4})(?![-\d])((?:\s*(?:,|and|&|or|\/)\s*\d{4}(?![-\d]))*)/g;
+  const adrMentions = /\bADRs?[- ]?(\d{4})(?![-\d])((?:\s*(?:,|and|&|or|\/)\s*\d{4}(?![-\d]))*)/g;
   for (const match of masked.matchAll(adrMentions)) {
-    const atStart = !match[1] && masked.slice(0, match.index).replace(/^[\s*#/]*/, "") === "";
-    const word = match[1] ?? (atStart ? previous.trim().split(/\s+/).at(-1)?.replace(/^[(["'*_]+|'s$/g, "") : undefined);
-    const prefix = word && repo.siblingNames().includes(word) ? word : undefined;
-    const numbers = [match[2], ...(match[3].match(/\d{4}/g) ?? [])];
-    const start = match.index + (match[1] ? match[0].indexOf("ADR") : 0);
+    const start = match.index;
+    const prefix = prefixBefore(text.slice(0, start), previous, repo, siblingPrefix);
+    const numbers = [match[1], ...(match[2].match(/\d{4}/g) ?? [])];
     const context = text.slice(Math.max(0, start - 100), start + match[0].length + 160);
     for (const number of numbers) {
-      const display = numbers.length === 1 ? match[0].slice(match[0].indexOf("ADR")) : `ADR ${number}`;
+      const display = numbers.length === 1 ? match[0] : `ADR ${number}`;
       pointers.push(adrPointer({ repo, prefix, number, display: shown(prefix, display), context, column: start }));
     }
   }
 
   if (kind === "comment") {
     for (const match of masked.matchAll(/\bsee\s+(?:also\s+)?([^\s`'",;]+)/gi)) {
-      const token = match[1].replace(/[.,;:)\]]+$/, "");
-      const pointer = classify(token, { repo, file, bareSymbols: true });
+      const pointer = classify(trimSeeTarget(match[1]), { repo, file, bareSymbols: true });
       if (pointer) pointers.push({ column: match.index, ...pointer });
     }
   }
 
   return pointers;
+}
+
+// Sentence punctuation after a `see` target goes; the `()` of a call stays.
+function trimSeeTarget(raw) {
+  let token = raw;
+  for (;;) {
+    const trimmed = token.replace(/[.,;:\]]+$/, "");
+    const unbalanced = trimmed.endsWith(")") && trimmed.split("(").length < trimmed.split(")").length;
+    token = unbalanced ? trimmed.slice(0, -1) : trimmed;
+    if (token === trimmed) return token;
+  }
 }
 
 function decodeURIComponentSafe(text) {
@@ -684,6 +708,16 @@ function decodeURIComponentSafe(text) {
   } catch {
     return text;
   }
+}
+
+// The sibling a repo name just before a pointer names, on its line or, when the pointer opens the
+// line, at the end of the previous one; undefined for no name or this repo's own. A comment line's
+// decoration (` * `, `// `, `# `) is not text before the pointer.
+function prefixBefore(before, previous, repo, pattern) {
+  if (!pattern) return undefined;
+  const lead = before.replace(/^[\s*#/]*/, "") === "" ? `${previous.trimEnd()} ` : before;
+  const named = pattern.exec(lead)?.[1];
+  return repo.config.self.includes(named) ? undefined : named;
 }
 
 function siblingPrefixPattern(repo) {

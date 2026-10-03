@@ -425,3 +425,51 @@ test("a wrapped prefix opened by a parenthesis still names the repo of the ADR o
   });
   assert.deepEqual(check(dir).lines, []);
 });
+
+test("a lone name only a sentence in a string still mentions fails; a string that is the name counts", () => {
+  const dir = repo({
+    "src/helper.ts": "export function newHelper() { return 1; }\n",
+    "src/helper.test.ts": 'test("oldHelper returns one", () => newHelper());\n',
+    "src/rule.mjs": 'export const banned = ["toLocaleString"];\n',
+    "src/a.ts": "// see oldHelper for the count\nexport const a = 1;\n",
+    "docs/live.md": "`oldHelper()` is renamed; `toLocaleString()` stays banned.\n",
+  });
+  assert.deepEqual(check(dir).lines, [
+    "docs/live.md:1: `oldHelper()` resolves to nothing",
+    "src/a.ts:1: `oldHelper` resolves to nothing",
+  ]);
+});
+
+test("a member of a partial type may live in a part no file holds, as a generated one does", () => {
+  const dir = repo({
+    "src/ProductDTO.cs": "public partial class ProductDTO { public bool IsListed => true; }\n",
+    "src/Use.cs": "public class Use { string N(ProductDTO dto) => dto.Name; }\n",
+    "docs/live.md": "`ProductDTO.Name` comes from the generator; `ProductDTO.Gone` from nowhere.\n",
+  });
+  assert.deepEqual(check(dir).lines, ["docs/live.md:1: `ProductDTO.Gone` resolves to nothing"]);
+});
+
+test("a call named after see in a comment is a pointer without backticks", () => {
+  const dir = repo({
+    "src/order.ts":
+      "// see placeOrderNow() for the rule, and see placeOrderLater().\nexport function placeOrderNow() {}\n",
+  });
+  assert.deepEqual(check(dir).lines, ["src/order.ts:1: `placeOrderLater()` resolves to nothing"]);
+});
+
+test("comments in a JSON-with-comments file are prose", () => {
+  const dir = repo({
+    ".pointer-check.jsonc": '{\n  // Settings for `src/gone.ts`.\n  "exempt": []\n}\n',
+    "tsconfig.json": '{\n  // The paths alias mirrors `src/paths.ts`.\n  "compilerOptions": { "baseUrl": "https://example.com//x" }\n}\n',
+    "src/paths.ts": "export {};\n",
+  });
+  assert.deepEqual(check(dir).lines, [".pointer-check.jsonc:2: `src/gone.ts` resolves to nothing"]);
+});
+
+test("a name a workflow's own code uses is in use", () => {
+  const dir = repo({
+    ".github/workflows/gate.yml":
+      "jobs:\n  report:\n    # `always()` keeps this step running after a failure; `never()` is not a function.\n    if: always()\n",
+  });
+  assert.deepEqual(check(dir).lines, [".github/workflows/gate.yml:3: `never()` resolves to nothing"]);
+});

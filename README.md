@@ -215,10 +215,6 @@ target. What counts as prose and as a pointer, why the whole tree is scanned on 
 `.pointer-check.jsonc` schema and the paths that are always exempt: the header of
 `pointer-check/pointer-check.mjs`.
 
-**Callers** (committed 2026-10-03, report-only until pacms-workspace#100 clears their trees):
-`pa-cms` (`build.yml`), `pa-storefront` (`lint-gate-rs.yml`); `pacms-workspace` (`test.yml`) once
-`v1` carries this workflow.
-
 Run it locally, from a repo checked out beside this one:
 
 ```bash
