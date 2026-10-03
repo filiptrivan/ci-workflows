@@ -387,3 +387,17 @@ test("a dot-led name is a file-name suffix too, so `.spec.ts` names a kind of fi
   });
   assert.deepEqual(check(dir).lines, ["docs/live.md:1: `.e2e.ts` resolves to nothing"]);
 });
+
+test("an ignored path through a symlinked directory is skipped and does not sink the others", () => {
+  const dir = repo({
+    ".gitignore": "node_modules/\n*.local.json\n",
+    "config/base.json": "{}\n",
+    "docs/live.md":
+      "Next documents it in `node_modules/next/dist/docs/caching.md`; keys go in `config/app.local.json`;\n" +
+      "`docs/gone.md` is gone.\n",
+  });
+  mkdirSync(join(dir, "node_modules/.pnpm/next/dist/docs"), { recursive: true });
+  writeFileSync(join(dir, "node_modules/.pnpm/next/dist/docs/caching.md"), "# Caching\n");
+  symlinkSync(".pnpm/next", join(dir, "node_modules/next"));
+  assert.deepEqual(check(dir).lines, ["docs/live.md:2: `docs/gone.md` resolves to nothing"]);
+});

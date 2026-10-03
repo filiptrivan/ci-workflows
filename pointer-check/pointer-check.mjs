@@ -862,26 +862,50 @@ function check(root, { only = [] } = {}) {
 // A path the repo's ignore rules match names a file that is untracked on purpose (a local secrets
 // file, build output), so it is not a pointer that went stale. The rules are tracked, which keeps
 // this the same in CI as on a laptop where the file happens to exist.
+//
+// git refuses a path that runs through a symlink ("beyond a symbolic link", pnpm's node_modules)
+// and fails the whole batch with it, so each path is asked about only up to its first symlinked
+// directory: an ignored directory before that point covers everything under it.
 function dropIgnored(failures) {
-  const byOwner = new Map();
+  const asked = new Map();
   for (const failure of failures) {
     const target = failure.ignorable;
     if (!target?.owner || !target.path || target.path.startsWith("..")) continue;
-    push(byOwner, target.owner, target.path);
+    if (!asked.has(target.owner)) asked.set(target.owner, new Set());
+    for (const candidate of ignoreCandidates(target.owner.root, target.path)) asked.get(target.owner).add(candidate);
   }
   const ignored = new Set();
-  for (const [owner, paths] of byOwner) {
+  for (const [owner, candidates] of asked) {
     const run = spawnSync("git", ["check-ignore", "--no-index", "--stdin", "-z"], {
       cwd: owner.root,
-      input: `${paths.join("\0")}\0`,
+      input: `${[...candidates].join("\0")}\0`,
       encoding: "utf8",
     });
     for (const path of run.stdout.split("\0").filter(Boolean)) ignored.add(`${owner.root}\0${path}`);
   }
   for (let i = failures.length - 1; i >= 0; i--) {
     const target = failures[i].ignorable;
-    if (target?.owner && ignored.has(`${target.owner.root}\0${target.path}`)) failures.splice(i, 1);
+    if (!target?.owner || !target.path) continue;
+    const candidates = ignoreCandidates(target.owner.root, target.path);
+    if (candidates.some((candidate) => ignored.has(`${target.owner.root}\0${candidate}`))) failures.splice(i, 1);
   }
+}
+
+// The path itself and each directory above it, stopping before the first symlinked directory.
+function ignoreCandidates(root, path) {
+  const segments = path.replace(/\/+$/, "").split("/");
+  const candidates = [];
+  for (let i = 1; i < segments.length; i++) {
+    const dir = segments.slice(0, i).join("/");
+    try {
+      if (lstatSync(join(root, dir)).isSymbolicLink()) return candidates;
+    } catch {
+      break;
+    }
+    candidates.push(`${dir}/`);
+  }
+  candidates.push(path);
+  return candidates;
 }
 
 function plural(count, word) {
