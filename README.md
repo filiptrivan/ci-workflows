@@ -179,7 +179,9 @@ caller has a single private sibling (one deploy key in the job → no SSH-agent 
 
 **This repo is the root of trust** — a change here runs with *every* caller's token. It is
 **solo-maintained by @filiptrivan**; write access is not granted to anyone else. Callers pin
-`@v1`, so to ship a change: edit `claude-gate.yml`, push to `main`, then move the `v1` tag
+`@v1`, so to ship a change: edit the workflow, push to `main`, then move the `v1` tag (moving it
+ships every workflow here at once, the pointer check's script included, since `pointer-check.yml`
+checks out `checker_ref`, `v1` by default)
 (`git tag -f v1 && git push -f origin v1`). The anti-footgun ruleset blocks force-push/deletion
 on `main`; intentional history changes require disabling it first.
 
@@ -209,14 +211,15 @@ then `git fetch --tags --force` (a plain pull won't update the tag).
 ## Pointer check
 
 Fails CI when prose names a file, a symbol or an ADR that resolves to nothing or to more than one
-target. Prose is every Markdown file and every comment in a code file; the explicit forms it
-recognizes, and why a bare backticked word is never one, are in the header of
-`pointer-check/pointer-check.mjs`. It scans the whole tree on every run, because a rename in one
-file strands a pointer in a file the diff never touched.
+target. What counts as prose and as a pointer, why the whole tree is scanned on every run, the
+`.pointer-check.jsonc` schema and the paths that are always exempt: the header of
+`pointer-check/pointer-check.mjs`.
 
-**Used by:** `pacms-workspace`, `pa-cms`, `pa-storefront`.
+**Callers** (committed 2026-10-03, report-only until pacms-workspace#100 clears their trees):
+`pa-cms` (`build.yml`), `pa-storefront` (`lint-gate-rs.yml`); `pacms-workspace` (`test.yml`) once
+`v1` carries this workflow.
 
-### Run it locally
+Run it locally, from a repo checked out beside this one:
 
 ```bash
 node ../ci-workflows/pointer-check/pointer-check.mjs                 # the whole tree; exit 1 on any failure
@@ -224,24 +227,7 @@ node ../ci-workflows/pointer-check/pointer-check.mjs docs/ README.md  # only rep
 node ../ci-workflows/pointer-check/pointer-check.mjs --report-only    # print, but exit 0
 ```
 
-Each failing pointer is one line: `file:line: \`pointer\` resolves to nothing` (or `to N targets`).
-
-### Configure a repo — `.pointer-check.jsonc` at its root
-
-```jsonc
-{
-  "exempt": ["docs/reports/", "!docs/reports/tool/README.md", "**/*.generated.ts"],
-  "siblings": { "other-repo": ["../other-repo"] },  // checked when present, skipped when not
-  "self": ["this-repo"]                             // `this-repo/x.ts` resolves here
-}
-```
-
-`docs/adr/`, `docs/plans/`, `docs/incidents/`, `node_modules` and any file whose first line starts
-`Snapshot as of YYYY-MM-DD` are always exempt: a dated snapshot stays true as of its date.
-
-### Add the caller
-
-A job in an existing workflow:
+Add the caller, a job in an existing workflow:
 
 ```yaml
   pointers:
@@ -250,5 +236,4 @@ A job in an existing workflow:
       report_only: true   # drop once the tree reports zero failures
 ```
 
-The tests: `node --test pointer-check/pointer-check.test.mjs` (run by `.github/workflows/test.yml`).
-
+Its tests: `node --test pointer-check/pointer-check.test.mjs`, run by `.github/workflows/test.yml`.

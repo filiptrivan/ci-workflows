@@ -326,3 +326,47 @@ test("a library's compiled file named where it bites is an outside fact, not a p
   });
   assert.deepEqual(check(dir).lines, []);
 });
+
+test("a member renamed on its type fails even where another file or a string still names it", () => {
+  const dir = repo({
+    "src/Order.cs": "public class Order { public decimal GrandTotal { get; set; } }\n",
+    "src/Cart.cs": "public class Cart { public decimal Total; void Pay(Order order) { Log(\"Order.Placed\"); } }\n",
+    "src/Clock.cs": "public class Clock { public System.DateTime Now() => System.DateTime.UtcNow; }\n",
+    "docs/live.md": "`Order.GrandTotal`, `Order.Total`, `Order.Placed`, and the library's `DateTime.UtcNow`.\n",
+  });
+  assert.deepEqual(check(dir).lines, [
+    "docs/live.md:1: `Order.Total` resolves to nothing",
+    "docs/live.md:1: `Order.Placed` resolves to nothing",
+  ]);
+});
+
+test("an inherited member resolves; one only a migration's strings still name does not", () => {
+  const dir = repo({
+    "src/Entity.cs": "public abstract class Entity { public long Id { get; set; } }\n",
+    "src/Brand.cs": "public class Brand : Entity { public string Name { get; set; } }\n",
+    "src/Order.cs": "public class Order : BusinessObject<long> { public string FullName { get; set; } }\n",
+    "src/OrderQueries.cs": "public class OrderQueries { long Find(Order order) => order.Version; }\n",
+    "src/Migrations/Merge.cs": 'public class Merge { void Up() { DropColumn(name: "FirstName", table: "Order"); } }\n',
+    "src/rule.mjs": 'export const banned = ["toLocaleString"];\n',
+    "docs/live.md":
+      "`Brand.Id`, `Brand.Slug`, `Order.FullName`, `Order.Version`, `Order.FirstName`, `Category.Products.Any()`,\n" +
+      "`toLocaleString()` and `oklch(0.5 0 0)`.\n",
+  });
+  assert.deepEqual(check(dir).lines, [
+    "docs/live.md:1: `Brand.Slug` resolves to nothing",
+    "docs/live.md:1: `Order.FirstName` resolves to nothing",
+    "docs/live.md:1: `Category.Products.Any()` resolves to nothing",
+  ]);
+});
+
+test("the config may end a value line with a comment and carry a trailing comma", () => {
+  const dir = repo({
+    ".pointer-check.jsonc":
+      '{\n  "exempt": ["vendor/",],  // vendored\n  "self": ["this-repo"]  // own names, "quoted // not a comment"\n}\n',
+    "vendor/a.md": "`src/gone.ts`\n",
+    "docs/live.md": "`this-repo/docs/live.md`\n",
+  });
+  const result = check(dir);
+  assert.equal(result.stderr, "");
+  assert.deepEqual(result.lines, []);
+});

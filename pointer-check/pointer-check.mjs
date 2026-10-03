@@ -10,7 +10,9 @@
 //   a file path       `apps/rs/next.config.ts`, `scripts/evals/`, a relative Markdown link;
 //                     resolves when exactly one tracked file or directory ends with it
 //   a symbol          `Type.Member` or `name()` in backticks, or `see someName` in a comment;
-//                     resolves when every name in it occurs together in one code file
+//                     resolves when a file that declares the type uses the member in its code
+//                     (strings and comments blanked); a library's type, used but never declared
+//                     here (`DateTime.UtcNow`), only needs its names used together in one file
 //   an ADR number     ADR 0047, ADR-0047; resolves when exactly one docs/adr/ file has it, or
 //                     when the words beside it pick one of the files that share it
 //   any of the above prefixed with a sibling repo's name (`pa-cms/Backend/X.cs`, pa-cms `X.Y`,
@@ -20,7 +22,7 @@
 // The whole tree is scanned on every run, never a diff: a rename in one file strands a pointer
 // in another file the diff does not touch.
 //
-// Per-repo settings live in `.pointer-check.jsonc` at the root, where a line may be a `//` comment:
+// Per-repo settings live in `.pointer-check.jsonc` at the root (JSON with comments):
 //   {
 //     "exempt": ["path/prefix/", "glob/**/*.md", "!re/included.md"],  // last match wins
 //     "siblings": { "name": ["../name", "name"] },  // present when a path holds a `.git`
@@ -39,8 +41,7 @@ const DEFAULT_EXEMPT = ["docs/adr/", "docs/plans/", "docs/incidents/", "**/node_
 // A bare `name.ext` is a file path only with one of these. Left out are served URLs (`robots.txt`,
 // `sitemap.xml`), assets, data files a run writes (`batch.json`) and a library's compiled `.js`
 // (`fbevents.js`, `get-img-props.js`): prose names those as outside facts where they bite (ADR
-// 0047), not as files of ours. With a slash they are still checked when the path starts at a real
-// top-level directory.
+// 0047), not as files of ours.
 const SOURCE_EXTENSIONS = new Set(
   (
     "md mdx ts tsx mts cts jsx mjs cs csproj sln props targets yml yaml sh bash " +
@@ -48,36 +49,38 @@ const SOURCE_EXTENSIONS = new Set(
   ).split(" "),
 );
 
-// How comments are written per extension. A file whose language is "tokens" also feeds the set of
-// names a symbol pointer resolves against; config and markup languages only carry comments.
-const LANGUAGES = {
-  c: "ts tsx mts cts js jsx mjs cjs cs java kt go swift scss less",
-  css: "css",
-  hash: "sh bash zsh yml yaml toml rb ps1 bats",
-  python: "py",
-  sql: "sql",
-  markup: "html csproj props targets xml",
-  hcl: "tf hcl",
-};
-const LANGUAGE_OF = new Map();
-for (const [language, extensions] of Object.entries(LANGUAGES)) {
-  for (const extension of extensions.split(" ")) LANGUAGE_OF.set(extension, language);
-}
-const TOKEN_EXTENSIONS = new Set(
-  "ts tsx mts cts js jsx mjs cjs cs java kt go swift py sh bash sql html scss less css tf".split(" "),
+// How comments are written, per extension. `names` marks a language whose code declares and uses
+// the names a symbol pointer resolves against; config, style and markup files only carry comments.
+const LANGUAGES = [
+  { extensions: "ts tsx mts cts js jsx mjs cjs cs", scan: (text) => scanC(text, { slash: true }), names: true },
+  { extensions: "scss less", scan: (text) => scanC(text, { slash: true }) },
+  { extensions: "css", scan: (text) => scanC(text, {}) },
+  { extensions: "sh bash zsh", scan: (text) => scanHash(text, {}), names: true },
+  { extensions: "yml yaml toml bats", scan: (text) => scanHash(text, {}) },
+  { extensions: "py", scan: (text) => scanHash(text, { python: true }), names: true },
+  { extensions: "sql", scan: (text) => scanC(text, { dashes: true }), names: true },
+  { extensions: "html", scan: (text) => scanMarkup(text), names: true },
+  { extensions: "csproj props targets xml", scan: (text) => scanMarkup(text) },
+  { extensions: "tf hcl", scan: (text) => scanC(text, { slash: true, hash: true }), names: true },
+];
+const LANGUAGE_OF = new Map(
+  LANGUAGES.flatMap((language) => language.extensions.split(" ").map((extension) => [extension, language])),
 );
 const MARKDOWN_EXTENSIONS = new Set(["md", "mdx"]);
 
 const PATH_CHARS = /^[A-Za-z0-9_.\-/[\]()+@~]+$/;
 const DOMAIN = /^[a-z0-9-]+(\.[a-z0-9-]+)*\.(rs|ba|com|net|org|io|dev|app|me|co|ai|sh|eu|de|uk|in)$/;
 const IDENTIFIER = "[A-Za-z_$][\\w$]*";
-const QUALIFIED = new RegExp(`^${IDENTIFIER}(\\.${IDENTIFIER})+(\\([\\w$.,'" ]*\\))?$`);
+// A call is `name()` or `name("literal")`: an identifier argument (`chore(deps)`) or a number
+// (`oklch(0.5 0 0)`) is code being quoted, not a name being pointed at.
+const CALL_SUFFIX = `\\((?:"[^"]*"|'[^']*')?\\)`;
+const QUALIFIED = new RegExp(`^${IDENTIFIER}(\\.${IDENTIFIER})+(${CALL_SUFFIX})?$`);
 // What an import of an extensionless specifier may land on, in the order a bundler tries.
 const MODULE_SUFFIXES = ["ts", "tsx", "mts", "js", "jsx", "mjs", "cjs"].flatMap((extension) => [
   `.${extension}`,
   `/index.${extension}`,
 ]);
-const CALL = new RegExp(`^${IDENTIFIER}\\([\\w$.,'" ]*\\)$`);
+const CALL = new RegExp(`^${IDENTIFIER}${CALL_SUFFIX}$`);
 // A dotted name ending in one of these is a file, not `Type.Member`: `Gateway_Guide_v3.pdf`.
 const FILE_EXTENSIONS = new Set(
   (
@@ -86,6 +89,14 @@ const FILE_EXTENSIONS = new Set(
     "ini cfg conf config plist bin exe dll so dylib map snap tfvars tfstate local example sample"
   ).split(" "),
 );
+const NAME = /[A-Za-z_$][\w$]*/g;
+// What a declared class, interface, record or struct extends or implements.
+const HERITAGE =
+  /\b(?:class|interface|record(?:\s+(?:struct|class))?|struct)\s+([A-Za-z_$][\w$]*)(?:<[^>{]*>)?(?:\([^)]*\))?\s*(?::|extends|implements)\s*([^{;=]+)/g;
+// A name a file declares: a type, namespace, function or binding keyword before it, or a key that
+// opens an object type (`StorefrontProductDTO: {` in generated OpenAPI types).
+const DECLARATION =
+  /\b(?:class|interface|record(?:\s+(?:struct|class))?|struct|enum|type|namespace|module|function\*?|def|const|let|var)\s+([A-Za-z_$][\w$]*)|^\s*([A-Za-z_$][\w$]*)\??\s*:\s*\{/gm;
 const STOPWORDS = new Set(
   "the and for its are was not but with from into that this than then them they our one all any can each has had have who why how what when where which while".split(
     " ",
@@ -100,8 +111,7 @@ function extensionOf(path) {
 
 function languageOf(path) {
   const base = path.slice(path.lastIndexOf("/") + 1);
-  if (/^Dockerfile(\.|$)/.test(base)) return "hash";
-  return LANGUAGE_OF.get(extensionOf(path));
+  return LANGUAGE_OF.get(/^Dockerfile(\.|$)/.test(base) ? "sh" : extensionOf(path));
 }
 
 function globToRegExp(glob) {
@@ -134,6 +144,24 @@ function exemptMatcher(entries) {
     for (const { include, test } of tests) if (test(path)) exempt = !include;
     return exempt;
   };
+}
+
+// JSON plus `//` and `/* */` comments and trailing commas, the way editors read a `.jsonc` file.
+function parseJsonc(text) {
+  let json = "";
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '"') {
+      const end = skipString(text, i, '"');
+      json += text.slice(i, end);
+      i = end - 1;
+    } else if (text.startsWith("//", i)) {
+      while (i < text.length && text[i] !== "\n") i++;
+      json += "\n";
+    } else if (text.startsWith("/*", i)) {
+      i = text.indexOf("*/", i + 2) + 1 || text.length;
+    } else json += text[i];
+  }
+  return JSON.parse(json.replace(/,(\s*[}\]])/g, "$1"));
 }
 
 function words(text) {
@@ -176,8 +204,7 @@ class Repo {
   static readConfig(root) {
     const path = join(root, ".pointer-check.jsonc");
     if (!existsSync(path)) return { exempt: [], siblings: {}, self: [] };
-    const text = readFileSync(path, "utf8").replace(/^\s*\/\/.*$/gm, "").replace(/,\s*\/\/.*$/gm, ",");
-    const config = JSON.parse(text);
+    const config = parseJsonc(readFileSync(path, "utf8"));
     return { exempt: config.exempt ?? [], siblings: config.siblings ?? {}, self: config.self ?? [] };
   }
 
@@ -234,12 +261,8 @@ class Repo {
   // Counts what a path pointer lands on: an exact root-relative path wins outright; otherwise
   // every file or directory the path is a segment-aligned suffix of.
   resolvePath(path) {
+    if (this.hasExact(path)) return 1;
     const clean = path.replace(/\/+$/, "");
-    if (this.fileSet.has(clean) || this.dirSet.has(clean)) return 1;
-    if (!extensionOf(clean) && !path.endsWith("/")) {
-      const module = MODULE_SUFFIXES.map((suffix) => this.resolvePath(`${clean}${suffix}`)).find((count) => count > 0);
-      if (module) return module;
-    }
     const base = clean.slice(clean.lastIndexOf("/") + 1);
     const suffix = `/${clean}`;
     const files = (this.byBase.get(base) ?? []).filter((file) => file.endsWith(suffix));
@@ -247,36 +270,78 @@ class Repo {
     return files.length + dirs.length;
   }
 
+  // An exact root-relative file or directory, or, for an extensionless module specifier, the file
+  // an import of it lands on.
+  hasExact(path) {
+    const clean = path.replace(/\/+$/, "");
+    if (clean === "" || this.fileSet.has(clean) || this.dirSet.has(clean)) return true;
+    if (extensionOf(clean) || path.endsWith("/")) return false;
+    return MODULE_SUFFIXES.some((suffix) => this.fileSet.has(`${clean}${suffix}`));
+  }
+
   hasBaseName(name) {
     return this.byBase.has(name) || this.dirsByBase.has(name);
   }
 
-  // Names that occur in code with comments removed, each mapped to the files it occurs in. A
-  // name only a comment mentions is not in code, which is how a rename is caught.
-  get tokens() {
-    if (!this._tokens) {
-      this._tokens = new Map();
-      this.files.forEach((file, index) => {
-        if (!TOKEN_EXTENSIONS.has(extensionOf(file)) || index >= this.scanned.length) return;
+  // Per code file, the names its code uses (with comments and strings blanked, and, separately,
+  // with strings kept), the types it declares and what each of them extends. A name only a
+  // comment, a log message or a migration's column string still mentions is gone from code, which
+  // is how a rename is caught.
+  get names() {
+    if (!this._names) {
+      const code = [];
+      const all = [];
+      const declares = new Map();
+      const bases = new Map();
+      this.scanned.forEach((file) => {
+        const language = languageOf(file);
+        if (!language?.names) return;
         const text = readText(join(this.root, file));
         if (text === undefined) return;
-        const { code } = scanComments(text, languageOf(file));
-        for (const token of new Set(code.match(/[A-Za-z_$][\w$]*/g) ?? [])) {
-          if (!this._tokens.has(token)) this._tokens.set(token, new Set());
-          this._tokens.get(token).add(index);
+        const scanned = language.scan(text);
+        const index = code.length;
+        code.push(new Set(scanned.code.match(NAME) ?? []));
+        all.push(new Set(scanned.withStrings.match(NAME) ?? []));
+        for (const match of scanned.code.matchAll(DECLARATION)) push(declares, match[1] ?? match[2], index);
+        for (const match of scanned.code.matchAll(HERITAGE)) {
+          for (const base of match[2].split(/,|\bextends\b|\bimplements\b/)) {
+            const name = base.trim().match(/^[A-Za-z_$][\w$]*/)?.[0];
+            if (name) push(bases, match[1], name);
+          }
         }
       });
+      this._names = { code, all, declares, bases };
     }
-    return this._tokens;
+    return this._names;
   }
 
+  // `Type.member`: true when a file declaring the type, or one of ours it extends, uses the member;
+  // undefined when the type is not ours at all. A type extending one we do not declare (Spiderly's
+  // `BusinessObject<long>`) may inherit the member from it, so there it is enough that our code
+  // uses the type and the member together somewhere.
+  memberOf(type, member, depth = 0) {
+    const { code, declares, bases } = this.names;
+    const files = declares.get(type);
+    if (!files) return undefined;
+    if (files.some((file) => code[file].has(member))) return true;
+    let outside = false;
+    for (const base of depth < 5 ? (bases.get(type) ?? []) : []) {
+      const found = this.memberOf(base, member, depth + 1);
+      if (found) return true;
+      if (found === undefined) outside = true;
+    }
+    return outside && usedTogether(code, [type, member]);
+  }
+
+  // Only the head and its first member are checked: `Category.Products.Any()` goes on into a
+  // library's API, which no declaration of ours can vouch for.
   resolveSymbol(text) {
-    const names = text.replace(/\(.*\)$/, "").split(".");
-    const sets = names.map((name) => this.tokens.get(name));
-    if (sets.some((set) => set === undefined)) return 0;
-    const [first, ...rest] = sets;
-    for (const file of first) if (rest.every((set) => set.has(file))) return 1;
-    return 0;
+    const [head, member] = text.replace(/\(.*\)$/, "").split(".");
+    const { all, declares } = this.names;
+    if (!member) return Number(declares.has(head) || usedTogether(all, [head]));
+    const ours = this.memberOf(head, member);
+    // A library's type (`DateTime.UtcNow`, `JSON.parse`) needs only its names used together.
+    return Number(ours ?? usedTogether(all, [head, member]));
   }
 
   get adrs() {
@@ -310,6 +375,10 @@ class Repo {
   }
 }
 
+function usedTogether(files, names) {
+  return files.some((tokens) => names.every((name) => tokens.has(name)));
+}
+
 function push(map, key, value) {
   const list = map.get(key);
   if (list) list.push(value);
@@ -326,27 +395,9 @@ function readText(path) {
   }
 }
 
-// Splits a code file into its comments, one entry per line a comment touches, and its code with
-// every comment blanked. Strings stay in the code: a name used only in a string still exists.
-// The scanners are approximate on purpose; a mis-scanned line costs a missed pointer at worst.
-function scanComments(text, language) {
-  switch (language) {
-    case "c":
-    case "hcl":
-      return scanC(text, { slash: true, hash: language === "hcl" });
-    case "css":
-      return scanC(text, { slash: false, hash: false });
-    case "python":
-    case "hash":
-      return scanHash(text, language);
-    case "sql":
-      return scanC(text, { slash: false, hash: false, dashes: true });
-    case "markup":
-      return scanMarkup(text);
-    default:
-      return { comments: [], code: text };
-  }
-}
+// Each scanner splits a code file into its comments, one entry per line a comment touches, and
+// its code with every comment and string literal blanked. They are approximate on purpose: a
+// mis-scanned line costs a missed pointer at worst.
 
 function lineStarts(text) {
   const starts = [0];
@@ -354,14 +405,23 @@ function lineStarts(text) {
   return starts;
 }
 
-function collect(text, ranges) {
+function collect(text, ranges, strings = []) {
   const starts = lineStarts(text);
   const comments = [];
   let code = "";
   let last = 0;
+  let withStrings = "";
+  let lastComment = 0;
   for (const [from, to] of ranges) {
+    withStrings += text.slice(lastComment, from) + text.slice(from, to).replace(/[^\n]/g, " ");
+    lastComment = to;
+  }
+  withStrings += text.slice(lastComment);
+  const blanked = [...ranges.map((range) => [...range, true]), ...strings].sort((a, b) => a[0] - b[0]);
+  for (const [from, to, comment] of blanked) {
     code += text.slice(last, from) + text.slice(from, to).replace(/[^\n]/g, " ");
     last = to;
+    if (!comment) continue;
     let line = upperBound(starts, from) - 1;
     let cursor = from;
     while (cursor < to) {
@@ -372,7 +432,7 @@ function collect(text, ranges) {
     }
   }
   code += text.slice(last);
-  return { comments, code };
+  return { comments, code, withStrings };
 }
 
 function upperBound(sorted, value) {
@@ -390,6 +450,7 @@ const REGEX_BEFORE = new Set(["(", ",", "=", ":", "[", "!", "&", "|", "?", "{", 
 
 function scanC(text, { slash, hash, dashes }) {
   const ranges = [];
+  const strings = [];
   let i = 0;
   let previous = "";
   const templateDepth = [];
@@ -398,7 +459,9 @@ function scanC(text, { slash, hash, dashes }) {
     const next = text[i + 1];
     if (templateDepth.length && char === "}" && templateDepth.at(-1) === 0) {
       templateDepth.pop();
-      i = skipTemplate(text, i + 1, templateDepth);
+      const end = skipTemplate(text, i + 1, templateDepth);
+      strings.push([i, end]);
+      i = end;
       previous = "`";
       continue;
     }
@@ -419,24 +482,30 @@ function scanC(text, { slash, hash, dashes }) {
       continue;
     }
     if (char === '"' || char === "'") {
-      i = skipString(text, i, char);
+      const end = skipString(text, i, char);
+      strings.push([i, end]);
+      i = end;
       previous = char;
       continue;
     }
     if (char === "`" && slash) {
-      i = skipTemplate(text, i + 1, templateDepth);
+      const end = skipTemplate(text, i + 1, templateDepth);
+      strings.push([i, end]);
+      i = end;
       previous = "`";
       continue;
     }
     if (char === "/" && slash && (previous === "" || REGEX_BEFORE.has(previous) || /\breturn$/.test(text.slice(Math.max(0, i - 8), i).trimEnd()))) {
-      i = skipRegex(text, i);
+      const end = skipRegex(text, i);
+      if (end > i + 1) strings.push([i, end]);
+      i = end;
       previous = "/";
       continue;
     }
     if (!/\s/.test(char)) previous = char;
     i++;
   }
-  return collect(text, ranges);
+  return collect(text, ranges, strings);
 }
 
 function skipString(text, start, quote) {
@@ -475,14 +544,17 @@ function skipRegex(text, start) {
 
 // `#` starts a comment at the start of a line or after whitespace, outside a quoted string. A
 // quote opens a string only where a value can start, so the apostrophe in `don't` does not.
-function scanHash(text, language) {
+function scanHash(text, { python }) {
   const ranges = [];
+  const strings = [];
   let i = 0;
   while (i < text.length) {
     const char = text[i];
-    if (language === "python" && (text.startsWith('"""', i) || text.startsWith("'''", i))) {
-      const end = text.indexOf(text.slice(i, i + 3), i + 3);
-      i = end === -1 ? text.length : end + 3;
+    if (python && (text.startsWith('"""', i) || text.startsWith("'''", i))) {
+      const close = text.indexOf(text.slice(i, i + 3), i + 3);
+      const end = close === -1 ? text.length : close + 3;
+      strings.push([i, end]);
+      i = end;
       continue;
     }
     const before = i === 0 ? "\n" : text[i - 1];
@@ -493,13 +565,15 @@ function scanHash(text, language) {
       i = to;
       continue;
     }
-    if ((char === '"' || char === "'") && (language === "python" || /[\s:=([{,]/.test(before))) {
-      i = skipString(text, i, char);
+    if ((char === '"' || char === "'") && (python || /[\s:=([{,]/.test(before))) {
+      const end = skipString(text, i, char);
+      strings.push([i, end]);
+      i = end;
       continue;
     }
     i++;
   }
-  return collect(text, ranges);
+  return collect(text, ranges, strings);
 }
 
 function scanMarkup(text) {
@@ -553,7 +627,7 @@ function pointersIn(text, { repo, file, kind }) {
     if (pointer) pointers.push({ column: match.index, ...pointer });
     else if (/^ADRs? ?-?\d{4}$/.test(content)) {
       const number = content.match(/\d{4}/)[0];
-      pointers.push(adrPointer({ repo, prefix, number, display: content, context: text, column: match.index }));
+      pointers.push(adrPointer({ repo, prefix, number, display: shown(prefix, content), context: text, column: match.index }));
     }
   }
 
@@ -577,7 +651,7 @@ function pointersIn(text, { repo, file, kind }) {
     const context = text.slice(Math.max(0, start - 100), start + match[0].length + 160);
     for (const number of numbers) {
       const display = numbers.length === 1 ? match[0].slice(match[0].indexOf("ADR")) : `ADR ${number}`;
-      pointers.push(adrPointer({ repo, prefix, number, display, context, column: start }));
+      pointers.push(adrPointer({ repo, prefix, number, display: shown(prefix, display), context, column: start }));
     }
   }
 
@@ -607,15 +681,21 @@ function siblingPrefixPattern(repo) {
   return new RegExp(`(?:^|[\\s(\\[*_"'])(${alternatives})(?:'s)?:?\\s+$`);
 }
 
-function adrPointer({ repo, prefix, number, display, context, column, bare }) {
-  const shown = prefix && !bare ? `${prefix} ${display}` : display;
+// The checkout a pointer resolves in: this repo, or the sibling its prefix names (undefined when
+// that sibling is not checked out, and then the pointer is skipped).
+function ownerOf(repo, prefix) {
+  return prefix ? repo.sibling(prefix) : repo;
+}
+
+function shown(prefix, text) {
+  return prefix ? `${prefix} ${text}` : text;
+}
+
+function adrPointer({ repo, prefix, number, display, context, column }) {
   return {
     column,
-    display: shown,
-    resolve: () => {
-      const target = prefix ? repo.sibling(prefix) : repo;
-      return target ? target.resolveAdr(number, context) : undefined;
-    },
+    display,
+    resolve: () => ownerOf(repo, prefix)?.resolveAdr(number, context),
   };
 }
 
@@ -631,13 +711,7 @@ function classify(content, { repo, file, prefix, bareSymbols }) {
   // `EXTRA.CARDBRAND` is a wire field of an outside system, not a type and member of ours.
   if (/^[A-Z0-9_]+(\.[A-Z0-9_]+)+$/.test(symbol)) return undefined;
   if (!shape || DOMAIN.test(symbol) || FILE_EXTENSIONS.has(extensionOf(symbol.replace(/\(.*$/, "")))) return undefined;
-  return {
-    display: prefix ? `${prefix} ${symbol}` : symbol,
-    resolve: () => {
-      const target = prefix ? repo.sibling(prefix) : repo;
-      return target ? target.resolveSymbol(symbol) : undefined;
-    },
-  };
+  return { display: shown(prefix, symbol), resolve: () => ownerOf(repo, prefix)?.resolveSymbol(symbol) };
 }
 
 // A lone word after `see` is a symbol only when it is shaped like code, not like English or a
@@ -663,20 +737,19 @@ function pathPointer(content, { repo, file, prefix }) {
     // A bare file name names a kind of file as often as one file ("each repo's `CLAUDE.md`"),
     // so it fails only when no file has that name at all.
     return {
-      display: prefix ? `${prefix} ${path}` : path,
+      display: shown(prefix, path),
       resolve: () => {
-        const target = prefix ? repo.sibling(prefix) : repo;
-        if (!target) return undefined;
-        return target.hasBaseName(path) ? 1 : 0;
+        const owner = ownerOf(repo, prefix);
+        return owner ? Number(owner.hasBaseName(path)) : undefined;
       },
-      ignorable: () => ({ owner: prefix ? repo.sibling(prefix) : repo, path }),
+      ignorable: () => ({ owner: ownerOf(repo, prefix), path }),
     };
   }
   const first = path.split("/")[0];
   const adr = /(?:^|\/)docs\/adr\/(\d{4})\/?$/.exec(path);
   if (adr) {
     const sibling = !prefix && repo.siblingNames().includes(first) ? first : prefix;
-    return adrPointer({ repo, prefix: sibling, number: adr[1], display: path, context: content, column: 0, bare: true });
+    return adrPointer({ repo, prefix: sibling, number: adr[1], display: shown(prefix, path), context: content, column: 0 });
   }
   if (!prefix && repo.siblingNames().includes(first)) {
     const rest = path.slice(first.length + 1);
@@ -689,22 +762,18 @@ function pathPointer(content, { repo, file, prefix }) {
       ignorable: () => ({ owner: repo.sibling(first), path: rest }),
     };
   }
-  const target = () => (prefix ? repo.sibling(prefix) : repo);
   if (DOMAIN.test(first)) return undefined;
   if (!SOURCE_EXTENSIONS.has(extension)) {
-    // Without a source extension, `origin/master` and `next/cache` look like paths; only a path
-    // that starts at a real top-level entry is one.
-    const owner = prefix ? repo.sibling(prefix) : repo;
+    // Without a source extension, `origin/master` and `next/cache` look like paths; only one that
+    // starts at a real top-level entry is one. The cost: a pointer under a top-level directory
+    // deleted whole goes unchecked; one under a deleted subtree (`docs/decisions/x/`) is caught.
+    const owner = ownerOf(repo, prefix);
     if (owner && !owner.topLevel.has(first)) return undefined;
-    if (!owner && !prefix) return undefined;
   }
   return {
-    display: prefix ? `${prefix} ${path}` : path,
-    resolve: () => {
-      const owner = target();
-      return owner ? owner.resolvePath(path) : undefined;
-    },
-    ignorable: () => ({ owner: target(), path }),
+    display: shown(prefix, path),
+    resolve: () => ownerOf(repo, prefix)?.resolvePath(path),
+    ignorable: () => ({ owner: ownerOf(repo, prefix), path }),
   };
 }
 
@@ -733,11 +802,7 @@ function relativePointer(path, { repo, file }) {
     display: path,
     resolve: () => {
       const { owner, path: within } = located();
-      if (!owner) return undefined;
-      const clean = within.replace(/\/$/, "");
-      if (clean === "" || owner.fileSet.has(clean) || owner.dirSet.has(clean)) return 1;
-      if (extensionOf(clean) || within.endsWith("/")) return 0;
-      return MODULE_SUFFIXES.some((suffix) => owner.fileSet.has(`${clean}${suffix}`)) ? 1 : 0;
+      return owner ? Number(owner.hasExact(within)) : undefined;
     },
     ignorable: located,
   };
@@ -751,10 +816,10 @@ function prose(repo, file) {
   if (MARKDOWN_EXTENSIONS.has(extension)) return markdownLines(text).map((line) => ({ ...line, kind: "markdown" }));
   const language = languageOf(file);
   if (!language) return [];
-  return scanComments(text, language).comments.map((line) => ({ ...line, kind: "comment" }));
+  return language.scan(text).comments.map((line) => ({ ...line, kind: "comment" }));
 }
 
-export function check(root, { only = [] } = {}) {
+function check(root, { only = [] } = {}) {
   const repo = new Repo(root);
   const exempt = exemptMatcher([...DEFAULT_EXEMPT, ...repo.config.exempt]);
   const selected = (file) =>
@@ -829,10 +894,7 @@ function main(argv) {
       return 2;
     } else only.push(argv[i].replace(/^\.\//, ""));
   }
-  root = resolve(
-    root ??
-      execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim(),
-  );
+  root = resolve(root ?? execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim());
   const { failures, pointerCount, fileCount } = check(root, { only });
   for (const failure of failures) process.stdout.write(`${failure.file}:${failure.line}: ${failure.message}\n`);
   const failingFiles = new Set(failures.map((failure) => failure.file)).size;
@@ -844,6 +906,4 @@ function main(argv) {
   return failures.length > 0 && !reportOnly ? 1 : 0;
 }
 
-if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith("pointer-check.mjs")) {
-  process.exitCode = main(process.argv.slice(2));
-}
+process.exitCode = main(process.argv.slice(2));
