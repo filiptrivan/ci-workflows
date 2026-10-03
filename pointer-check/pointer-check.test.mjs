@@ -401,3 +401,11 @@ test("an ignored path through a symlinked directory is skipped and does not sink
   symlinkSync(".pnpm/next", join(dir, "node_modules/next"));
   assert.deepEqual(check(dir).lines, ["docs/live.md:2: `docs/gone.md` resolves to nothing"]);
 });
+
+test("a sibling prefix at the end of the previous line still prefixes the pointer that opens the next", () => {
+  const dir = repo({
+    ".pointer-check.jsonc": JSON.stringify({ siblings: { "pa-cms": ["../pa-cms"] } }),
+    "docs/live.md": "The capture's reason sits on pa-cms\n`Order.CaptureAsync`, decided in pa-cms\nADR 0009.\n",
+  });
+  assert.deepEqual(check(dir).lines, []);
+});

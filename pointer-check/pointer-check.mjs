@@ -618,7 +618,9 @@ const SPAN = /(`+)(?!`)([\s\S]*?[^`])\1(?!`)/g;
 
 // Every pointer in one line of prose, as { column, display, resolve } where resolve() returns how
 // many targets the pointer lands on, or undefined when it cannot be checked here.
-function pointersIn(text, { repo, file, kind }) {
+// `previous` is the prose line before this one: wrapped prose leaves a repo's name at the end of
+// one line and its pointer at the start of the next.
+function pointersIn(text, { repo, file, kind, previous = "" }) {
   const pointers = [];
   const masked = text.replace(SPAN, (span) => " ".repeat(span.length));
   const siblingPrefix = siblingPrefixPattern(repo);
@@ -626,7 +628,8 @@ function pointersIn(text, { repo, file, kind }) {
   for (const match of text.matchAll(SPAN)) {
     const content = match[2].trim();
     const before = text.slice(0, match.index);
-    const named = siblingPrefix && siblingPrefix.exec(before)?.[1];
+    const lead = before.trim() === "" ? `${previous.trimEnd()} ` : before;
+    const named = siblingPrefix && siblingPrefix.exec(lead)?.[1];
     const prefix = repo.config.self.includes(named) ? undefined : named;
     const afterSee = kind === "comment" && /\bsee\s+$/i.test(before);
     const pointer = classify(content, { repo, file, prefix, bareSymbols: afterSee });
@@ -651,7 +654,9 @@ function pointersIn(text, { repo, file, kind }) {
 
   const adrMentions = /(?:([\w.-]+?)(?:'s)?\s+)?\bADRs?[- ]?(\d{4})(?![-\d])((?:\s*(?:,|and|&|or|\/)\s*\d{4}(?![-\d]))*)/g;
   for (const match of masked.matchAll(adrMentions)) {
-    const prefix = match[1] && repo.siblingNames().includes(match[1]) ? match[1] : undefined;
+    const atStart = !match[1] && masked.slice(0, match.index).trim() === "";
+    const word = match[1] ?? (atStart ? previous.trim().split(/\s+/).at(-1)?.replace(/'s$/, "") : undefined);
+    const prefix = word && repo.siblingNames().includes(word) ? word : undefined;
     const numbers = [match[2], ...(match[3].match(/\d{4}/g) ?? [])];
     const start = match.index + (match[1] ? match[0].indexOf("ADR") : 0);
     const context = text.slice(Math.max(0, start - 100), start + match[0].length + 160);
@@ -838,8 +843,11 @@ function check(root, { only = [] } = {}) {
     const lines = prose(repo, file);
     if (lines.length === 0) continue;
     fileCount++;
+    let previous = "";
     for (const { line, text, kind } of lines) {
-      for (const pointer of pointersIn(text, { repo, file, kind })) {
+      const found = pointersIn(text, { repo, file, kind, previous });
+      previous = text;
+      for (const pointer of found) {
         const targets = pointer.resolve();
         if (targets === undefined) continue;
         pointerCount++;
