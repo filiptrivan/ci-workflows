@@ -417,3 +417,11 @@ test("a wrapped prefix still counts inside a block comment whose lines start wit
   });
   assert.deepEqual(check(dir).lines, []);
 });
+
+test("a wrapped prefix opened by a parenthesis still names the repo of the ADR on the next line", () => {
+  const dir = repo({
+    ".pointer-check.jsonc": JSON.stringify({ siblings: { umbrella: ["../umbrella"] } }),
+    "docs/live.md": "Every pointer resolves (umbrella\nADR 0047, prose never restates the code).\n",
+  });
+  assert.deepEqual(check(dir).lines, []);
+});

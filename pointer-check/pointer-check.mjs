@@ -656,7 +656,7 @@ function pointersIn(text, { repo, file, kind, previous = "" }) {
   const adrMentions = /(?:([\w.-]+?)(?:'s)?\s+)?\bADRs?[- ]?(\d{4})(?![-\d])((?:\s*(?:,|and|&|or|\/)\s*\d{4}(?![-\d]))*)/g;
   for (const match of masked.matchAll(adrMentions)) {
     const atStart = !match[1] && masked.slice(0, match.index).replace(/^[\s*#/]*/, "") === "";
-    const word = match[1] ?? (atStart ? previous.trim().split(/\s+/).at(-1)?.replace(/'s$/, "") : undefined);
+    const word = match[1] ?? (atStart ? previous.trim().split(/\s+/).at(-1)?.replace(/^[(["'*_]+|'s$/g, "") : undefined);
     const prefix = word && repo.siblingNames().includes(word) ? word : undefined;
     const numbers = [match[2], ...(match[3].match(/\d{4}/g) ?? [])];
     const start = match.index + (match[1] ? match[0].indexOf("ADR") : 0);
