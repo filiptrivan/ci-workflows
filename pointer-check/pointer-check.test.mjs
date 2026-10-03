@@ -370,3 +370,11 @@ test("the config may end a value line with a comment and carry a trailing comma"
   assert.equal(result.stderr, "");
   assert.deepEqual(result.lines, []);
 });
+
+test("an extension is matched as written, so a member called `Sql` is not a .sql file", () => {
+  const dir = repo({
+    "src/Migration.cs": "public class Migration { void Up(MigrationBuilder migrationBuilder) => migrationBuilder.Sql(\"\"); }\n",
+    "docs/live.md": "Raw SQL goes through `migrationBuilder.Sql`, never `schema.sql`.\n",
+  });
+  assert.deepEqual(check(dir).lines, ["docs/live.md:1: `schema.sql` resolves to nothing"]);
+});

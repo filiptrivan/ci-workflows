@@ -103,15 +103,16 @@ const STOPWORDS = new Set(
   ),
 );
 
+// As written, not lowercased: `migrationBuilder.Sql` is a member, `schema.sql` a file.
 function extensionOf(path) {
   const base = path.slice(path.lastIndexOf("/") + 1);
   const dot = base.lastIndexOf(".");
-  return dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
+  return dot > 0 ? base.slice(dot + 1) : "";
 }
 
 function languageOf(path) {
   const base = path.slice(path.lastIndexOf("/") + 1);
-  return LANGUAGE_OF.get(/^Dockerfile(\.|$)/.test(base) ? "sh" : extensionOf(path));
+  return LANGUAGE_OF.get(/^Dockerfile(\.|$)/.test(base) ? "sh" : extensionOf(path).toLowerCase());
 }
 
 function globToRegExp(glob) {
