@@ -1,7 +1,10 @@
 # ci-workflows
 
-Shared CI for our projects. Currently one thing: the reusable **Claude review gate**
-(`.github/workflows/claude-gate.yml`).
+Shared CI for our projects:
+
+- the reusable **Claude review gate** (`.github/workflows/claude-gate.yml`), below;
+- the reusable **pointer check** (`.github/workflows/pointer-check.yml`), at the end:
+  [Pointer check](#pointer-check).
 
 ## What the gate does
 
@@ -200,3 +203,52 @@ then `git fetch --tags --force` (a plain pull won't update the tag).
   to inputs (or a per-repo `audit_spec` symmetric with `review_spec`) the first time any caller needs
   different values. It's also gated in two places (the `gh issue` tools/turn bump in `claude_args` and
   the prompt section) — edit them as a pair.
+
+---
+
+## Pointer check
+
+Fails CI when prose names a file, a symbol or an ADR that resolves to nothing or to more than one
+target. Prose is every Markdown file and every comment in a code file; the explicit forms it
+recognizes, and why a bare backticked word is never one, are in the header of
+`pointer-check/pointer-check.mjs`. It scans the whole tree on every run, because a rename in one
+file strands a pointer in a file the diff never touched.
+
+**Used by:** `pacms-workspace`, `pa-cms`, `pa-storefront`.
+
+### Run it locally
+
+```bash
+node ../ci-workflows/pointer-check/pointer-check.mjs                 # the whole tree; exit 1 on any failure
+node ../ci-workflows/pointer-check/pointer-check.mjs docs/ README.md  # only report on these paths
+node ../ci-workflows/pointer-check/pointer-check.mjs --report-only    # print, but exit 0
+```
+
+Each failing pointer is one line: `file:line: \`pointer\` resolves to nothing` (or `to N targets`).
+
+### Configure a repo — `.pointer-check.jsonc` at its root
+
+```jsonc
+{
+  "exempt": ["docs/reports/", "!docs/reports/tool/README.md", "**/*.generated.ts"],
+  "siblings": { "other-repo": ["../other-repo"] },  // checked when present, skipped when not
+  "self": ["this-repo"]                             // `this-repo/x.ts` resolves here
+}
+```
+
+`docs/adr/`, `docs/plans/`, `docs/incidents/`, `node_modules` and any file whose first line starts
+`Snapshot as of YYYY-MM-DD` are always exempt: a dated snapshot stays true as of its date.
+
+### Add the caller
+
+A job in an existing workflow:
+
+```yaml
+  pointers:
+    uses: filiptrivan/ci-workflows/.github/workflows/pointer-check.yml@v1
+    with:
+      report_only: true   # drop once the tree reports zero failures
+```
+
+The tests: `node --test pointer-check/pointer-check.test.mjs` (run by `.github/workflows/test.yml`).
+

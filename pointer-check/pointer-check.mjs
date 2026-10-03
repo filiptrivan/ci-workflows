@@ -1,0 +1,849 @@
+#!/usr/bin/env node
+// Fails when prose names a file, a symbol or an ADR that does not exist, or names it ambiguously.
+//
+//   node pointer-check.mjs [--root <dir>] [--report-only] [path ...]
+//
+// Prose is every Markdown file and every comment in a code file, minus the exempt set. A pointer
+// is one of four explicit forms; anything else, a bare backticked word above all, is never one,
+// because a missed pointer costs less than a false failure that teaches people to ignore the check:
+//
+//   a file path       `apps/rs/next.config.ts`, `scripts/evals/`, a relative Markdown link;
+//                     resolves when exactly one tracked file or directory ends with it
+//   a symbol          `Type.Member` or `name()` in backticks, or `see someName` in a comment;
+//                     resolves when every name in it occurs together in one code file
+//   an ADR number     ADR 0047, ADR-0047; resolves when exactly one docs/adr/ file has it, or
+//                     when the words beside it pick one of the files that share it
+//   any of the above prefixed with a sibling repo's name (`pa-cms/Backend/X.cs`, pa-cms `X.Y`,
+//                     pa-cms ADR 0009); checked in that sibling when it is checked out beside
+//                     this one, skipped when it is not, so a lone clone's CI never fails on it
+//
+// The whole tree is scanned on every run, never a diff: a rename in one file strands a pointer
+// in another file the diff does not touch.
+//
+// Per-repo settings live in `.pointer-check.jsonc` at the root, where a line may be a `//` comment:
+//   {
+//     "exempt": ["path/prefix/", "glob/**/*.md", "!re/included.md"],  // last match wins
+//     "siblings": { "name": ["../name", "name"] },  // present when a path holds a `.git`
+//     "self": ["name"]                               // this repo's own names, as a prefix
+//   }
+
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, lstatSync, readFileSync, readlinkSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
+
+const SNAPSHOT_HEADER = /^(>\s*)?Snapshot as of \d{4}-\d{2}-\d{2}\b/;
+
+// Dated snapshots stay true as of their date, so a pointer in one is history, not a claim.
+const DEFAULT_EXEMPT = ["docs/adr/", "docs/plans/", "docs/incidents/", "**/node_modules/**"];
+
+// A bare `name.ext` is a file path only with one of these. Left out are served URLs (`robots.txt`,
+// `sitemap.xml`), assets, data files a run writes (`batch.json`) and a library's compiled `.js`
+// (`fbevents.js`, `get-img-props.js`): prose names those as outside facts where they bite (ADR
+// 0047), not as files of ours. With a slash they are still checked when the path starts at a real
+// top-level directory.
+const SOURCE_EXTENSIONS = new Set(
+  (
+    "md mdx ts tsx mts cts jsx mjs cs csproj sln props targets yml yaml sh bash " +
+    "py sql html scss css toml tf hcl ps1 bats razor cshtml"
+  ).split(" "),
+);
+
+// How comments are written per extension. A file whose language is "tokens" also feeds the set of
+// names a symbol pointer resolves against; config and markup languages only carry comments.
+const LANGUAGES = {
+  c: "ts tsx mts cts js jsx mjs cjs cs java kt go swift scss less",
+  css: "css",
+  hash: "sh bash zsh yml yaml toml rb ps1 bats",
+  python: "py",
+  sql: "sql",
+  markup: "html csproj props targets xml",
+  hcl: "tf hcl",
+};
+const LANGUAGE_OF = new Map();
+for (const [language, extensions] of Object.entries(LANGUAGES)) {
+  for (const extension of extensions.split(" ")) LANGUAGE_OF.set(extension, language);
+}
+const TOKEN_EXTENSIONS = new Set(
+  "ts tsx mts cts js jsx mjs cjs cs java kt go swift py sh bash sql html scss less css tf".split(" "),
+);
+const MARKDOWN_EXTENSIONS = new Set(["md", "mdx"]);
+
+const PATH_CHARS = /^[A-Za-z0-9_.\-/[\]()+@~]+$/;
+const DOMAIN = /^[a-z0-9-]+(\.[a-z0-9-]+)*\.(rs|ba|com|net|org|io|dev|app|me|co|ai|sh|eu|de|uk|in)$/;
+const IDENTIFIER = "[A-Za-z_$][\\w$]*";
+const QUALIFIED = new RegExp(`^${IDENTIFIER}(\\.${IDENTIFIER})+(\\([\\w$.,'" ]*\\))?$`);
+// What an import of an extensionless specifier may land on, in the order a bundler tries.
+const MODULE_SUFFIXES = ["ts", "tsx", "mts", "js", "jsx", "mjs", "cjs"].flatMap((extension) => [
+  `.${extension}`,
+  `/index.${extension}`,
+]);
+const CALL = new RegExp(`^${IDENTIFIER}\\([\\w$.,'" ]*\\)$`);
+// A dotted name ending in one of these is a file, not `Type.Member`: `Gateway_Guide_v3.pdf`.
+const FILE_EXTENSIONS = new Set(
+  (
+    "pdf png jpg jpeg gif svg webp avif ico txt xml csv tsv xls xlsx doc docx ppt pptx zip gz tgz tar " +
+    "log env lock dat bak db sqlite pem key crt p12 pfx woff woff2 ttf otf mp4 mov webm mp3 wav htm " +
+    "ini cfg conf config plist bin exe dll so dylib map snap tfvars tfstate local example sample"
+  ).split(" "),
+);
+const STOPWORDS = new Set(
+  "the and for its are was not but with from into that this than then them they our one all any can each has had have who why how what when where which while".split(
+    " ",
+  ),
+);
+
+function extensionOf(path) {
+  const base = path.slice(path.lastIndexOf("/") + 1);
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
+}
+
+function languageOf(path) {
+  const base = path.slice(path.lastIndexOf("/") + 1);
+  if (/^Dockerfile(\.|$)/.test(base)) return "hash";
+  return LANGUAGE_OF.get(extensionOf(path));
+}
+
+function globToRegExp(glob) {
+  let source = "";
+  for (let i = 0; i < glob.length; i++) {
+    const char = glob[i];
+    if (char === "*" && glob[i + 1] === "*") {
+      source += glob[i + 2] === "/" ? "(?:.*/)?" : ".*";
+      i += glob[i + 2] === "/" ? 2 : 1;
+    } else if (char === "*") source += "[^/]*";
+    else if (char === "?") source += "[^/]";
+    else source += char.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  }
+  return new RegExp(`^${source}$`);
+}
+
+function exemptMatcher(entries) {
+  const tests = entries.map((raw) => {
+    const include = raw.startsWith("!");
+    const entry = include ? raw.slice(1) : raw;
+    if (/[*?]/.test(entry)) {
+      const pattern = globToRegExp(entry.endsWith("/") ? `${entry}**` : entry);
+      return { include, test: (path) => pattern.test(path) };
+    }
+    const prefix = entry.endsWith("/") ? entry : `${entry}/`;
+    return { include, test: (path) => path === entry || path.startsWith(prefix) };
+  });
+  return (path) => {
+    let exempt = false;
+    for (const { include, test } of tests) if (test(path)) exempt = !include;
+    return exempt;
+  };
+}
+
+function words(text) {
+  return text
+    .toLowerCase()
+    .replace(/['’]/g, "")
+    .split(/[^a-z0-9]+/)
+    .filter((word) => word.length >= 3 && !STOPWORDS.has(word) && !/^\d+$/.test(word));
+}
+
+// One checkout: its files, and the indexes a pointer resolves against, built on first use.
+class Repo {
+  constructor(root) {
+    this.root = root;
+    this.config = Repo.readConfig(root);
+    const { files, linked } = Repo.listFiles(root);
+    // `scanned` are real files; `files` adds the paths that reach a file through a symlinked
+    // directory, which resolve but are never scanned twice.
+    this.scanned = files;
+    this.files = [...files, ...linked];
+    this.fileSet = new Set(this.files);
+    this.dirSet = new Set();
+    this.byBase = new Map();
+    this.dirsByBase = new Map();
+    for (const file of this.files) {
+      const segments = file.split("/");
+      push(this.byBase, segments.at(-1), file);
+      for (let i = 1; i < segments.length; i++) {
+        const dir = segments.slice(0, i).join("/");
+        if (!this.dirSet.has(dir)) {
+          this.dirSet.add(dir);
+          push(this.dirsByBase, segments[i - 1], dir);
+        }
+      }
+    }
+    this.topLevel = new Set(this.files.map((file) => file.split("/")[0]));
+    this.siblings = new Map();
+  }
+
+  static readConfig(root) {
+    const path = join(root, ".pointer-check.jsonc");
+    if (!existsSync(path)) return { exempt: [], siblings: {}, self: [] };
+    const text = readFileSync(path, "utf8").replace(/^\s*\/\/.*$/gm, "").replace(/,\s*\/\/.*$/gm, ",");
+    const config = JSON.parse(text);
+    return { exempt: config.exempt ?? [], siblings: config.siblings ?? {}, self: config.self ?? [] };
+  }
+
+  // Tracked plus untracked-and-unignored, so a file written this session can be pointed at before
+  // it is staged; minus anything deleted from the working tree. A tracked symlink to a directory
+  // in the repo contributes the files under its target at its own path, since that path works.
+  static listFiles(root) {
+    const out = execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 256 * 1024 * 1024,
+    });
+    const listed = [...new Set(out.split("\0").filter(Boolean))];
+    const files = [];
+    const links = [];
+    for (const file of listed) {
+      let stat;
+      try {
+        stat = lstatSync(join(root, file));
+      } catch {
+        continue;
+      }
+      if (stat.isSymbolicLink()) links.push(file);
+      else if (stat.isFile()) files.push(file);
+    }
+    const real = new Set(files);
+    const linked = [];
+    for (const link of links) {
+      const target = readlinkSync(join(root, link));
+      if (isAbsolute(target)) continue;
+      const targetPath = posix.normalize(posix.join(posix.dirname(link), target.split(sep).join("/")));
+      if (targetPath.startsWith("..")) continue;
+      for (const file of real) {
+        if (file.startsWith(`${targetPath}/`)) linked.push(`${link}${file.slice(targetPath.length)}`);
+      }
+    }
+    return { files, linked };
+  }
+
+  sibling(name) {
+    if (!Object.hasOwn(this.config.siblings, name)) return undefined;
+    if (!this.siblings.has(name)) {
+      const paths = [this.config.siblings[name]].flat();
+      const found = paths.map((path) => resolve(this.root, path)).find((path) => existsSync(join(path, ".git")));
+      this.siblings.set(name, found ? new Repo(found) : null);
+    }
+    return this.siblings.get(name);
+  }
+
+  siblingNames() {
+    return Object.keys(this.config.siblings);
+  }
+
+  // Counts what a path pointer lands on: an exact root-relative path wins outright; otherwise
+  // every file or directory the path is a segment-aligned suffix of.
+  resolvePath(path) {
+    const clean = path.replace(/\/+$/, "");
+    if (this.fileSet.has(clean) || this.dirSet.has(clean)) return 1;
+    if (!extensionOf(clean) && !path.endsWith("/")) {
+      const module = MODULE_SUFFIXES.map((suffix) => this.resolvePath(`${clean}${suffix}`)).find((count) => count > 0);
+      if (module) return module;
+    }
+    const base = clean.slice(clean.lastIndexOf("/") + 1);
+    const suffix = `/${clean}`;
+    const files = (this.byBase.get(base) ?? []).filter((file) => file.endsWith(suffix));
+    const dirs = (this.dirsByBase.get(base) ?? []).filter((dir) => dir.endsWith(suffix));
+    return files.length + dirs.length;
+  }
+
+  hasBaseName(name) {
+    return this.byBase.has(name) || this.dirsByBase.has(name);
+  }
+
+  // Names that occur in code with comments removed, each mapped to the files it occurs in. A
+  // name only a comment mentions is not in code, which is how a rename is caught.
+  get tokens() {
+    if (!this._tokens) {
+      this._tokens = new Map();
+      this.files.forEach((file, index) => {
+        if (!TOKEN_EXTENSIONS.has(extensionOf(file)) || index >= this.scanned.length) return;
+        const text = readText(join(this.root, file));
+        if (text === undefined) return;
+        const { code } = scanComments(text, languageOf(file));
+        for (const token of new Set(code.match(/[A-Za-z_$][\w$]*/g) ?? [])) {
+          if (!this._tokens.has(token)) this._tokens.set(token, new Set());
+          this._tokens.get(token).add(index);
+        }
+      });
+    }
+    return this._tokens;
+  }
+
+  resolveSymbol(text) {
+    const names = text.replace(/\(.*\)$/, "").split(".");
+    const sets = names.map((name) => this.tokens.get(name));
+    if (sets.some((set) => set === undefined)) return 0;
+    const [first, ...rest] = sets;
+    for (const file of first) if (rest.every((set) => set.has(file))) return 1;
+    return 0;
+  }
+
+  get adrs() {
+    if (!this._adrs) {
+      this._adrs = new Map();
+      for (const file of this.files) {
+        const match = /^docs\/adr\/(\d{4})-(.+)\.md$/.exec(file);
+        if (match) push(this._adrs, match[1], { file, words: new Set(words(match[2])) });
+      }
+    }
+    return this._adrs;
+  }
+
+  // Two ADRs may share a number (ADRs are immutable, so it is never fixed by renumbering); the
+  // words around the mention then have to pick one: at least two words of its title that the
+  // other titles do not have, and more of them than any other candidate.
+  resolveAdr(number, context) {
+    const candidates = this.adrs.get(number) ?? [];
+    if (candidates.length <= 1) return candidates.length;
+    const said = new Set(words(context));
+    const scores = candidates.map((candidate) => {
+      let score = 0;
+      for (const word of candidate.words) {
+        if (!said.has(word)) continue;
+        if (candidates.every((other) => other === candidate || !other.words.has(word))) score++;
+      }
+      return score;
+    });
+    const best = Math.max(...scores);
+    return best >= 2 && scores.filter((score) => score === best).length === 1 ? 1 : candidates.length;
+  }
+}
+
+function push(map, key, value) {
+  const list = map.get(key);
+  if (list) list.push(value);
+  else map.set(key, [value]);
+}
+
+function readText(path) {
+  try {
+    if (statSync(path).size > 8 * 1024 * 1024) return undefined;
+    const text = readFileSync(path, "utf8");
+    return text.includes("\0") ? undefined : text;
+  } catch {
+    return undefined;
+  }
+}
+
+// Splits a code file into its comments, one entry per line a comment touches, and its code with
+// every comment blanked. Strings stay in the code: a name used only in a string still exists.
+// The scanners are approximate on purpose; a mis-scanned line costs a missed pointer at worst.
+function scanComments(text, language) {
+  switch (language) {
+    case "c":
+    case "hcl":
+      return scanC(text, { slash: true, hash: language === "hcl" });
+    case "css":
+      return scanC(text, { slash: false, hash: false });
+    case "python":
+    case "hash":
+      return scanHash(text, language);
+    case "sql":
+      return scanC(text, { slash: false, hash: false, dashes: true });
+    case "markup":
+      return scanMarkup(text);
+    default:
+      return { comments: [], code: text };
+  }
+}
+
+function lineStarts(text) {
+  const starts = [0];
+  for (let i = 0; i < text.length; i++) if (text[i] === "\n") starts.push(i + 1);
+  return starts;
+}
+
+function collect(text, ranges) {
+  const starts = lineStarts(text);
+  const comments = [];
+  let code = "";
+  let last = 0;
+  for (const [from, to] of ranges) {
+    code += text.slice(last, from) + text.slice(from, to).replace(/[^\n]/g, " ");
+    last = to;
+    let line = upperBound(starts, from) - 1;
+    let cursor = from;
+    while (cursor < to) {
+      const lineEnd = Math.min(to, line + 1 < starts.length ? starts[line + 1] - 1 : text.length);
+      comments.push({ line: line + 1, text: text.slice(cursor, lineEnd) });
+      line++;
+      cursor = lineEnd + 1;
+    }
+  }
+  code += text.slice(last);
+  return { comments, code };
+}
+
+function upperBound(sorted, value) {
+  let low = 0;
+  let high = sorted.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (sorted[mid] <= value) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+
+const REGEX_BEFORE = new Set(["(", ",", "=", ":", "[", "!", "&", "|", "?", "{", "}", ";", "+", "-", "*", "%", "~", "^", "<", ">"]);
+
+function scanC(text, { slash, hash, dashes }) {
+  const ranges = [];
+  let i = 0;
+  let previous = "";
+  const templateDepth = [];
+  while (i < text.length) {
+    const char = text[i];
+    const next = text[i + 1];
+    if (templateDepth.length && char === "}" && templateDepth.at(-1) === 0) {
+      templateDepth.pop();
+      i = skipTemplate(text, i + 1, templateDepth);
+      previous = "`";
+      continue;
+    }
+    if (templateDepth.length && char === "{") templateDepth[templateDepth.length - 1]++;
+    if (templateDepth.length && char === "}") templateDepth[templateDepth.length - 1]--;
+    if (char === "/" && next === "*") {
+      const end = text.indexOf("*/", i + 2);
+      const to = end === -1 ? text.length : end + 2;
+      ranges.push([i, to]);
+      i = to;
+      continue;
+    }
+    if ((slash && char === "/" && next === "/") || (hash && char === "#") || (dashes && char === "-" && next === "-")) {
+      const end = text.indexOf("\n", i);
+      const to = end === -1 ? text.length : end;
+      ranges.push([i, to]);
+      i = to;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      i = skipString(text, i, char);
+      previous = char;
+      continue;
+    }
+    if (char === "`" && slash) {
+      i = skipTemplate(text, i + 1, templateDepth);
+      previous = "`";
+      continue;
+    }
+    if (char === "/" && slash && (previous === "" || REGEX_BEFORE.has(previous) || /\breturn$/.test(text.slice(Math.max(0, i - 8), i).trimEnd()))) {
+      i = skipRegex(text, i);
+      previous = "/";
+      continue;
+    }
+    if (!/\s/.test(char)) previous = char;
+    i++;
+  }
+  return collect(text, ranges);
+}
+
+function skipString(text, start, quote) {
+  let i = start + 1;
+  while (i < text.length && text[i] !== quote && text[i] !== "\n") i += text[i] === "\\" ? 2 : 1;
+  return i + 1;
+}
+
+// Returns the index after the closing backtick, or the index after `${` with a new depth pushed,
+// so the caller scans the interpolation as code.
+function skipTemplate(text, start, depth) {
+  let i = start;
+  while (i < text.length) {
+    if (text[i] === "\\") i += 2;
+    else if (text[i] === "`") return i + 1;
+    else if (text[i] === "$" && text[i + 1] === "{") {
+      depth.push(0);
+      return i + 2;
+    } else i++;
+  }
+  return i;
+}
+
+function skipRegex(text, start) {
+  let i = start + 1;
+  let inClass = false;
+  while (i < text.length && text[i] !== "\n") {
+    if (text[i] === "\\") i += 2;
+    else if (text[i] === "[") inClass = true, i++;
+    else if (text[i] === "]") inClass = false, i++;
+    else if (text[i] === "/" && !inClass) return i + 1;
+    else i++;
+  }
+  return start + 1;
+}
+
+// `#` starts a comment at the start of a line or after whitespace, outside a quoted string. A
+// quote opens a string only where a value can start, so the apostrophe in `don't` does not.
+function scanHash(text, language) {
+  const ranges = [];
+  let i = 0;
+  while (i < text.length) {
+    const char = text[i];
+    if (language === "python" && (text.startsWith('"""', i) || text.startsWith("'''", i))) {
+      const end = text.indexOf(text.slice(i, i + 3), i + 3);
+      i = end === -1 ? text.length : end + 3;
+      continue;
+    }
+    const before = i === 0 ? "\n" : text[i - 1];
+    if (char === "#" && /\s/.test(before)) {
+      const end = text.indexOf("\n", i);
+      const to = end === -1 ? text.length : end;
+      ranges.push([i, to]);
+      i = to;
+      continue;
+    }
+    if ((char === '"' || char === "'") && (language === "python" || /[\s:=([{,]/.test(before))) {
+      i = skipString(text, i, char);
+      continue;
+    }
+    i++;
+  }
+  return collect(text, ranges);
+}
+
+function scanMarkup(text) {
+  const ranges = [];
+  let at = text.indexOf("<!--");
+  while (at !== -1) {
+    const end = text.indexOf("-->", at + 4);
+    const to = end === -1 ? text.length : end + 3;
+    ranges.push([at, to]);
+    at = text.indexOf("<!--", to);
+  }
+  return collect(text, ranges);
+}
+
+// Markdown prose, one entry per line, without fenced code blocks: a fence holds commands and
+// sample code, where a path is an argument, not a claim about the tree.
+function markdownLines(text) {
+  const lines = [];
+  let fence = null;
+  text.split("\n").forEach((line, index) => {
+    const marker = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length) fence = null;
+      return;
+    }
+    if (marker) {
+      fence = marker[1];
+      return;
+    }
+    lines.push({ line: index + 1, text: line });
+  });
+  return lines;
+}
+
+const SPAN = /(`+)(?!`)([\s\S]*?[^`])\1(?!`)/g;
+
+// Every pointer in one line of prose, as { column, display, resolve } where resolve() returns how
+// many targets the pointer lands on, or undefined when it cannot be checked here.
+function pointersIn(text, { repo, file, kind }) {
+  const pointers = [];
+  const masked = text.replace(SPAN, (span) => " ".repeat(span.length));
+  const siblingPrefix = siblingPrefixPattern(repo);
+
+  for (const match of text.matchAll(SPAN)) {
+    const content = match[2].trim();
+    const before = text.slice(0, match.index);
+    const named = siblingPrefix && siblingPrefix.exec(before)?.[1];
+    const prefix = repo.config.self.includes(named) ? undefined : named;
+    const afterSee = kind === "comment" && /\bsee\s+$/i.test(before);
+    const pointer = classify(content, { repo, file, prefix, bareSymbols: afterSee });
+    if (pointer) pointers.push({ column: match.index, ...pointer });
+    else if (/^ADRs? ?-?\d{4}$/.test(content)) {
+      const number = content.match(/\d{4}/)[0];
+      pointers.push(adrPointer({ repo, prefix, number, display: content, context: text, column: match.index }));
+    }
+  }
+
+  if (kind === "markdown") {
+    const links = /!?\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)|^\s*\[(?!\^)[^\]]+\]:\s*(\S+)/g;
+    for (const match of masked.matchAll(links)) {
+      const target = text.slice(match.index, match.index + match[0].length).match(/\]\(([^)\s]+)|\]:\s*(\S+)/);
+      const raw = (target[1] ?? target[2]).replace(/^<|>$/g, "");
+      if (/^[a-z][a-z0-9+.-]*:/i.test(raw) || raw.startsWith("#") || raw.startsWith("/")) continue;
+      const path = decodeURIComponentSafe(raw.replace(/[#?].*$/, ""));
+      if (!path) continue;
+      pointers.push({ column: match.index, ...relativePointer(path, { repo, file }) });
+    }
+  }
+
+  const adrMentions = /(?:([\w.-]+?)(?:'s)?\s+)?\bADRs?[- ]?(\d{4})(?![-\d])((?:\s*(?:,|and|&|or|\/)\s*\d{4}(?![-\d]))*)/g;
+  for (const match of masked.matchAll(adrMentions)) {
+    const prefix = match[1] && repo.siblingNames().includes(match[1]) ? match[1] : undefined;
+    const numbers = [match[2], ...(match[3].match(/\d{4}/g) ?? [])];
+    const start = match.index + (match[1] ? match[0].indexOf("ADR") : 0);
+    const context = text.slice(Math.max(0, start - 100), start + match[0].length + 160);
+    for (const number of numbers) {
+      const display = numbers.length === 1 ? match[0].slice(match[0].indexOf("ADR")) : `ADR ${number}`;
+      pointers.push(adrPointer({ repo, prefix, number, display, context, column: start }));
+    }
+  }
+
+  if (kind === "comment") {
+    for (const match of masked.matchAll(/\bsee\s+(?:also\s+)?([^\s`'",;]+)/gi)) {
+      const token = match[1].replace(/[.,;:)\]]+$/, "");
+      const pointer = classify(token, { repo, file, bareSymbols: true });
+      if (pointer) pointers.push({ column: match.index, ...pointer });
+    }
+  }
+
+  return pointers;
+}
+
+function decodeURIComponentSafe(text) {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
+
+function siblingPrefixPattern(repo) {
+  const names = [...repo.siblingNames(), ...repo.config.self];
+  if (names.length === 0) return undefined;
+  const alternatives = names.map((name) => name.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&")).join("|");
+  return new RegExp(`(?:^|[\\s(\\[*_"'])(${alternatives})(?:'s)?:?\\s+$`);
+}
+
+function adrPointer({ repo, prefix, number, display, context, column, bare }) {
+  const shown = prefix && !bare ? `${prefix} ${display}` : display;
+  return {
+    column,
+    display: shown,
+    resolve: () => {
+      const target = prefix ? repo.sibling(prefix) : repo;
+      return target ? target.resolveAdr(number, context) : undefined;
+    },
+  };
+}
+
+// What a backticked span or a `see` target is: a path, a symbol, or not a pointer at all.
+function classify(content, { repo, file, prefix, bareSymbols }) {
+  const path = pathPointer(content, { repo, file, prefix });
+  if (path) return path;
+  const symbol = content.trim();
+  // `vercel.deployment.ready` and `local.kupac.svi` are an outside system's dotted names; ours
+  // start with a type, so a lowercase head is a symbol only where a comment says `see` before it.
+  const qualified = QUALIFIED.test(symbol) && (bareSymbols || /^[A-Z]/.test(symbol));
+  const shape = qualified || CALL.test(symbol) || (bareSymbols && codeShaped(symbol));
+  // `EXTRA.CARDBRAND` is a wire field of an outside system, not a type and member of ours.
+  if (/^[A-Z0-9_]+(\.[A-Z0-9_]+)+$/.test(symbol)) return undefined;
+  if (!shape || DOMAIN.test(symbol) || FILE_EXTENSIONS.has(extensionOf(symbol.replace(/\(.*$/, "")))) return undefined;
+  return {
+    display: prefix ? `${prefix} ${symbol}` : symbol,
+    resolve: () => {
+      const target = prefix ? repo.sibling(prefix) : repo;
+      return target ? target.resolveSymbol(symbol) : undefined;
+    },
+  };
+}
+
+// A lone word after `see` is a symbol only when it is shaped like code, not like English or a
+// brand: a camelCase hump, an inner underscore, or PascalCase with a hump.
+function codeShaped(word) {
+  if (!new RegExp(`^${IDENTIFIER}$`).test(word)) return false;
+  return /^[a-z_$][\w$]*[a-z0-9][A-Z]/.test(word) || /\w_\w/.test(word) || /^[A-Z][a-z0-9]+[A-Z]/.test(word);
+}
+
+function pathPointer(content, { repo, file, prefix }) {
+  let path = content.replace(/#.*$/, "").replace(/:\d+(-\d+)?$/, "");
+  const own = repo.config.self.find((name) => path.startsWith(`${name}/`));
+  if (own && !prefix) path = path.slice(own.length + 1);
+  if (path.startsWith("./") || path.startsWith("../")) {
+    if (!PATH_CHARS.test(path)) return undefined;
+    return relativePointer(path, { repo, file });
+  }
+  if (!PATH_CHARS.test(path) || /^[@/~-]/.test(path) || path.includes("//")) return undefined;
+  const extension = extensionOf(path);
+  const hasSlash = path.includes("/");
+  if (!hasSlash) {
+    if (!SOURCE_EXTENSIONS.has(extension) || DOMAIN.test(path)) return undefined;
+    // A bare file name names a kind of file as often as one file ("each repo's `CLAUDE.md`"),
+    // so it fails only when no file has that name at all.
+    return {
+      display: prefix ? `${prefix} ${path}` : path,
+      resolve: () => {
+        const target = prefix ? repo.sibling(prefix) : repo;
+        if (!target) return undefined;
+        return target.hasBaseName(path) ? 1 : 0;
+      },
+      ignorable: () => ({ owner: prefix ? repo.sibling(prefix) : repo, path }),
+    };
+  }
+  const first = path.split("/")[0];
+  const adr = /(?:^|\/)docs\/adr\/(\d{4})\/?$/.exec(path);
+  if (adr) {
+    const sibling = !prefix && repo.siblingNames().includes(first) ? first : prefix;
+    return adrPointer({ repo, prefix: sibling, number: adr[1], display: path, context: content, column: 0, bare: true });
+  }
+  if (!prefix && repo.siblingNames().includes(first)) {
+    const rest = path.slice(first.length + 1);
+    return {
+      display: path,
+      resolve: () => {
+        const sibling = repo.sibling(first);
+        return sibling && rest ? sibling.resolvePath(rest) : undefined;
+      },
+      ignorable: () => ({ owner: repo.sibling(first), path: rest }),
+    };
+  }
+  const target = () => (prefix ? repo.sibling(prefix) : repo);
+  if (DOMAIN.test(first)) return undefined;
+  if (!SOURCE_EXTENSIONS.has(extension)) {
+    // Without a source extension, `origin/master` and `next/cache` look like paths; only a path
+    // that starts at a real top-level entry is one.
+    const owner = prefix ? repo.sibling(prefix) : repo;
+    if (owner && !owner.topLevel.has(first)) return undefined;
+    if (!owner && !prefix) return undefined;
+  }
+  return {
+    display: prefix ? `${prefix} ${path}` : path,
+    resolve: () => {
+      const owner = target();
+      return owner ? owner.resolvePath(path) : undefined;
+    },
+    ignorable: () => ({ owner: target(), path }),
+  };
+}
+
+// A path relative to the file holding it, as a Markdown link is. It may climb into a sibling
+// checkout; it is skipped when it climbs anywhere this run cannot see.
+function relativePointer(path, { repo, file }) {
+  const located = () => {
+    const absolute = resolve(repo.root, dirname(file), path);
+    const inside = relative(repo.root, absolute).split(sep).join("/");
+    if (!inside.startsWith("..") && !isAbsolute(inside)) {
+      const first = inside.split("/")[0];
+      if (repo.siblingNames().includes(first) && !repo.topLevel.has(first)) {
+        return { owner: repo.sibling(first), path: inside.slice(first.length + 1) };
+      }
+      return { owner: repo, path: path.endsWith("/") && inside ? `${inside}/` : inside };
+    }
+    for (const name of repo.siblingNames()) {
+      const sibling = repo.sibling(name);
+      if (!sibling) continue;
+      const within = relative(sibling.root, absolute).split(sep).join("/");
+      if (!within.startsWith("..") && !isAbsolute(within)) return { owner: sibling, path: within };
+    }
+    return { owner: undefined, path: inside };
+  };
+  return {
+    display: path,
+    resolve: () => {
+      const { owner, path: within } = located();
+      if (!owner) return undefined;
+      const clean = within.replace(/\/$/, "");
+      if (clean === "" || owner.fileSet.has(clean) || owner.dirSet.has(clean)) return 1;
+      if (extensionOf(clean) || within.endsWith("/")) return 0;
+      return MODULE_SUFFIXES.some((suffix) => owner.fileSet.has(`${clean}${suffix}`)) ? 1 : 0;
+    },
+    ignorable: located,
+  };
+}
+
+function prose(repo, file) {
+  const extension = extensionOf(file);
+  const text = readText(join(repo.root, file));
+  if (text === undefined) return [];
+  if (SNAPSHOT_HEADER.test(text.slice(0, text.indexOf("\n") === -1 ? undefined : text.indexOf("\n")))) return [];
+  if (MARKDOWN_EXTENSIONS.has(extension)) return markdownLines(text).map((line) => ({ ...line, kind: "markdown" }));
+  const language = languageOf(file);
+  if (!language) return [];
+  return scanComments(text, language).comments.map((line) => ({ ...line, kind: "comment" }));
+}
+
+export function check(root, { only = [] } = {}) {
+  const repo = new Repo(root);
+  const exempt = exemptMatcher([...DEFAULT_EXEMPT, ...repo.config.exempt]);
+  const selected = (file) =>
+    only.length === 0 || only.some((path) => file === path || file.startsWith(path.endsWith("/") ? path : `${path}/`));
+  const failures = [];
+  let pointerCount = 0;
+  let fileCount = 0;
+  for (const file of repo.scanned) {
+    if (exempt(file) || !selected(file)) continue;
+    const lines = prose(repo, file);
+    if (lines.length === 0) continue;
+    fileCount++;
+    for (const { line, text, kind } of lines) {
+      for (const pointer of pointersIn(text, { repo, file, kind })) {
+        const targets = pointer.resolve();
+        if (targets === undefined) continue;
+        pointerCount++;
+        if (targets === 1) continue;
+        failures.push({
+          file,
+          line,
+          column: pointer.column,
+          ignorable: targets === 0 ? pointer.ignorable?.() : undefined,
+          message: `\`${pointer.display}\` ${targets === 0 ? "resolves to nothing" : `resolves to ${targets} targets`}`,
+        });
+      }
+    }
+  }
+  dropIgnored(failures);
+  failures.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : a.line - b.line || a.column - b.column));
+  return { failures, pointerCount, fileCount };
+}
+
+// A path the repo's ignore rules match names a file that is untracked on purpose (a local secrets
+// file, build output), so it is not a pointer that went stale. The rules are tracked, which keeps
+// this the same in CI as on a laptop where the file happens to exist.
+function dropIgnored(failures) {
+  const byOwner = new Map();
+  for (const failure of failures) {
+    const target = failure.ignorable;
+    if (!target?.owner || !target.path || target.path.startsWith("..")) continue;
+    push(byOwner, target.owner, target.path);
+  }
+  const ignored = new Set();
+  for (const [owner, paths] of byOwner) {
+    const run = spawnSync("git", ["check-ignore", "--no-index", "--stdin", "-z"], {
+      cwd: owner.root,
+      input: `${paths.join("\0")}\0`,
+      encoding: "utf8",
+    });
+    for (const path of run.stdout.split("\0").filter(Boolean)) ignored.add(`${owner.root}\0${path}`);
+  }
+  for (let i = failures.length - 1; i >= 0; i--) {
+    const target = failures[i].ignorable;
+    if (target?.owner && ignored.has(`${target.owner.root}\0${target.path}`)) failures.splice(i, 1);
+  }
+}
+
+function plural(count, word) {
+  return `${count} ${word}${count === 1 ? "" : "s"}`;
+}
+
+function main(argv) {
+  let root;
+  let reportOnly = false;
+  const only = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--report-only") reportOnly = true;
+    else if (argv[i] === "--root") root = argv[++i];
+    else if (argv[i].startsWith("--")) {
+      process.stderr.write(`pointer-check: unknown option ${argv[i]}\n`);
+      return 2;
+    } else only.push(argv[i].replace(/^\.\//, ""));
+  }
+  root = resolve(
+    root ??
+      execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim(),
+  );
+  const { failures, pointerCount, fileCount } = check(root, { only });
+  for (const failure of failures) process.stdout.write(`${failure.file}:${failure.line}: ${failure.message}\n`);
+  const failingFiles = new Set(failures.map((failure) => failure.file)).size;
+  process.stdout.write(
+    failures.length === 0
+      ? `pointer-check: no failing pointers (${plural(pointerCount, "pointer")} checked in ${plural(fileCount, "file")})\n`
+      : `pointer-check: ${plural(failures.length, "failing pointer")} in ${plural(failingFiles, "file")}${reportOnly ? " (report only)" : ""}\n`,
+  );
+  return failures.length > 0 && !reportOnly ? 1 : 0;
+}
+
+if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith("pointer-check.mjs")) {
+  process.exitCode = main(process.argv.slice(2));
+}

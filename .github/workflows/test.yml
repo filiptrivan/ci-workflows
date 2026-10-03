@@ -1,0 +1,23 @@
+name: Test
+
+# The pointer check's own tests; the reusable workflows here run in their callers, not here.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pointer-check:
+    name: pointer check tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: node --test pointer-check/pointer-check.test.mjs

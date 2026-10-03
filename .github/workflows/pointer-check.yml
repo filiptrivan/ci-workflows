@@ -1,0 +1,57 @@
+name: Pointer check
+
+# Fails the caller's CI when prose (Markdown, and comments in code) names a file, a symbol or an
+# ADR that resolves to nothing or to more than one target. All of the logic is
+# pointer-check/pointer-check.mjs; the caller's `.pointer-check.jsonc` holds its exempt paths and
+# sibling repos.
+#
+# The checker is checked out beside the caller's tree, never inside it: the check lists untracked
+# files too (so a file written in a local session can be pointed at before it is staged), and a
+# checkout inside the tree would be scanned as the caller's own prose.
+
+on:
+  workflow_call:
+    inputs:
+      report_only:
+        description: Print every failing pointer but pass, while a tree still has failures to fix.
+        type: boolean
+        default: false
+      checker_ref:
+        description: The ci-workflows ref whose checker runs; keep it equal to the ref the caller pins.
+        type: string
+        default: v1
+
+jobs:
+  pointers:
+    name: pointer check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: repo
+          persist-credentials: false
+
+      - uses: actions/checkout@v5
+        with:
+          repository: filiptrivan/ci-workflows
+          ref: ${{ inputs.checker_ref }}
+          path: checker
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Check every pointer in prose
+        env:
+          REPORT_ONLY: ${{ inputs.report_only }}
+        run: |
+          if [ "$REPORT_ONLY" = "true" ]; then
+            node checker/pointer-check/pointer-check.mjs --root repo --report-only
+          else
+            node checker/pointer-check/pointer-check.mjs --root repo
+          fi
