@@ -13,8 +13,7 @@ sets a blocking **`claude-gate`** status check. Routine PRs merge with **no huma
 changes to owner-reserved areas escalate to the repo owner. The gate re-reviews on every
 push (suppressing nits on re-review) and **fails closed** (red) if anything goes wrong.
 
-**Used by:** `pa-cms`, `pa-storefront`, `stridon-presentational-websites` — each a ~30-line
-caller. All the logic lives here, once.
+**Used by:** `pa-cms`, `pa-storefront` — each a ~30-line caller. All the logic lives here, once.
 
 ## How the prompt is split (why one workflow fits every repo)
 
@@ -142,7 +141,7 @@ always fails its own `claude-gate`. Therefore:
 |---|---|---|---|
 | `review_spec` | yes | — | the per-repo block class / owner-reserved / conventions / skip |
 | `model` | no | `opus` | Claude model (`sonnet` if you hit the weekly cap) |
-| `same_repo_only` | no | `false` | PUBLIC repos: skip fork PRs (no secrets on forks) |
+| `same_repo_only` | no | `false` | PUBLIC repos: skip fork PRs (no secrets on forks). Where every outside PR comes from a fork, the gate then reviews nothing: `stridon-presentational-websites` reviewed 0 PRs in 3.5 months and dropped its caller 2026-10-05 (its `.github/workflows/test.yml` tells why). |
 | `owner_handle` | no | `filiptrivan` | GitHub handle @mentioned on owner-reserved escalation |
 | `arch_audit` | no | `true` | **On by default.** Non-blocking architecture / tech-debt lens on the touched code. In-PR debt → 🟡 comment; bigger pre-existing legacy → one tracked `tech-debt`+`audit:claude` issue (first round only, deduped on open+closed fingerprints). Never affects the verdict. **Requires the `tech-debt` and `audit:claude` labels in the caller repo** (runbook step 1). Set `false` to disable per caller. |
 | `cross_repo` | no | `""` | Opt-in cross-repo contract check (prose): this repo's contract surface + which sibling to grep for consumer impact when the diff touches it. Empty = off. Findings → PR **summary only**. See [Cross-repo contract check](#cross-repo-contract-check-optional). |
