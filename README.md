@@ -220,6 +220,7 @@ Run it locally, from a repo checked out beside this one:
 node ../ci-workflows/pointer-check/pointer-check.mjs                 # the whole tree; exit 1 on any failure
 node ../ci-workflows/pointer-check/pointer-check.mjs docs/ README.md  # only report on these paths
 node ../ci-workflows/pointer-check/pointer-check.mjs --report-only    # print, but exit 0
+node ../ci-workflows/pointer-check/pointer-check.mjs --fail-headings  # an unresolved heading pointer fails too
 ```
 
 Add the caller, a job in an existing workflow:
