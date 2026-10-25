@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Fails when prose names a file, a symbol or an ADR that does not exist, or names it ambiguously.
+// Fails when prose names a file, a symbol, an ADR or a heading that does not exist, or names it
+// ambiguously.
 //
-//   node pointer-check.mjs [--root <dir>] [--report-only] [--fail-headings] [path ...]
+//   node pointer-check.mjs [--root <dir>] [--report-only] [path ...]
 //
 // Prose is every Markdown file and every comment in a code file, minus the exempt set. A pointer
 // is one of five explicit forms; anything else, a bare backticked word above all, is never one,
@@ -21,8 +22,7 @@
 //   a heading         a backticked file path, an arrow (→ or ->) and a quoted text, as in
 //                     `CLAUDE.md` → "Repo info"; resolves when the Markdown file it lands on holds
 //                     exactly one heading, table row's first cell or bold run opening a line with
-//                     that text (how they are matched and ranked: headingPointer). An unresolved
-//                     one is printed and fails nothing, until --fail-headings makes it fail
+//                     that text (how they are matched and ranked: headingPointer)
 //   any of the above prefixed with a sibling repo's name (`pa-cms/Backend/X.cs`, pa-cms `X.Y`,
 //                     pa-cms ADR 0009); checked in that sibling when it is checked out beside
 //                     this one, skipped when it is not, so a lone clone's CI never fails on it
@@ -678,7 +678,8 @@ function pointersIn(text, { repo, file, kind, previous = "", next = "" }) {
   const pointers = [];
   const masked = text.replace(SPAN, (span) => " ".repeat(span.length));
   const siblingPrefix = siblingPrefixPattern(repo);
-  const wrapped = `${text} ${next.replace(DECORATION, "")}`;
+  // Markdown has no decoration: a wrapped line may open with text's own `/` or `#`.
+  const wrapped = `${text} ${kind === "comment" ? next.replace(DECORATION, "") : next}`;
 
   for (const match of text.matchAll(SPAN)) {
     const content = match[2].trim();
@@ -833,9 +834,17 @@ function rankOf(target, key) {
 }
 
 // What a heading pointer's text and a target are compared as: case, emphasis, strikethrough, code
-// backticks and curly apostrophes never decide a match.
+// backticks, curly apostrophes and curly double quotes never decide a match. A pointer's text
+// cannot hold a straight double quote, so it quotes a title's own as curly ones (the frozen
+// TODO ledger's `**"Pozovi kurira" is not idempotent`).
 function headingKey(text) {
-  return text.replace(/[`*~]/g, "").replace(/’/g, "'").replace(/\s+/g, " ").trim().toLowerCase();
+  return text
+    .replace(/[`*~]/g, "")
+    .replace(/’/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 }
 
 // What a backticked span or a `see` target is: a path, a symbol, or not a pointer at all.
@@ -985,7 +994,6 @@ function check(root, { only = [] } = {}) {
           file,
           line,
           column: pointer.column,
-          heading: pointer.heading,
           ignorable: targets === 0 ? pointer.located?.() : undefined,
           message: `${pointer.heading ? pointer.display : `\`${pointer.display}\``} ${targets === 0 ? "resolves to nothing" : `resolves to ${targets} targets`}`,
         });
@@ -1053,11 +1061,9 @@ function plural(count, word) {
 function main(argv) {
   let root;
   let reportOnly = false;
-  let failHeadings = false;
   const only = [];
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--report-only") reportOnly = true;
-    else if (argv[i] === "--fail-headings") failHeadings = true;
     else if (argv[i] === "--root") root = argv[++i];
     else if (argv[i].startsWith("--")) {
       process.stderr.write(`pointer-check: unknown option ${argv[i]}\n`);
@@ -1066,20 +1072,16 @@ function main(argv) {
   }
   root = resolve(root ?? execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim());
   const { failures, pointerCount, fileCount } = check(root, { only });
-  const excused = (failure) => failure.heading && !failHeadings;
   for (const failure of failures) {
-    process.stdout.write(`${failure.file}:${failure.line}: ${failure.message}${excused(failure) ? " (report only)" : ""}\n`);
+    process.stdout.write(`${failure.file}:${failure.line}: ${failure.message}\n`);
   }
-  const failing = failures.filter((failure) => !excused(failure));
-  const failingFiles = new Set(failing.map((failure) => failure.file)).size;
+  const failingFiles = new Set(failures.map((failure) => failure.file)).size;
   const summary =
-    failing.length === 0
+    failures.length === 0
       ? `no failing pointers (${plural(pointerCount, "pointer")} checked in ${plural(fileCount, "file")})`
-      : `${plural(failing.length, "failing pointer")} in ${plural(failingFiles, "file")}${reportOnly ? " (report only)" : ""}`;
-  const headings = failures.length - failing.length;
-  const headingNote = headings > 0 ? `; ${plural(headings, "unresolved heading pointer")} (report only)` : "";
-  process.stdout.write(`pointer-check: ${summary}${headingNote}\n`);
-  return failing.length > 0 && !reportOnly ? 1 : 0;
+      : `${plural(failures.length, "failing pointer")} in ${plural(failingFiles, "file")}${reportOnly ? " (report only)" : ""}`;
+  process.stdout.write(`pointer-check: ${summary}\n`);
+  return failures.length > 0 && !reportOnly ? 1 : 0;
 }
 
 process.exitCode = main(process.argv.slice(2));
