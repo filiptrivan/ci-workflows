@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Fails when prose names a file, a symbol or an ADR that does not exist, or names it ambiguously.
 //
-//   node pointer-check.mjs [--root <dir>] [--siblings-beside <checkout>] [--report-only] [path ...]
+//   node pointer-check.mjs [--root <dir>] [--siblings-beside <checkout>] [--staged] [--report-only] [path ...]
 //
 // Prose is every Markdown file and every comment in a code file, minus the exempt set. A pointer
 // is one of four explicit forms; anything else, a bare backticked word above all, is never one,
@@ -25,7 +25,9 @@
 //                     (a throwaway worktree at a pinned commit, whose own `..` holds no sibling)
 //
 // The whole tree is scanned on every run, never a diff: a rename in one file strands a pointer
-// in another file the diff does not touch.
+// in another file the diff does not touch. --staged, a pre-commit hook's call, checks only the
+// files the index adds or changes, read from the hook's index before the run drops the git
+// variables a hook hands it: every git call after runs as by hand, each sibling's in its own repo.
 //
 // Per-repo settings live in `.pointer-check.jsonc` at the root (JSON with comments):
 //   {
@@ -274,6 +276,11 @@ class Repo {
 
   siblingNames() {
     return Object.keys(this.config.siblings);
+  }
+
+  // Every name a prefix before a pointer may give: a sibling's, or this repo's own.
+  prefixNames() {
+    return [...this.siblingNames(), ...this.config.self];
   }
 
   // Counts what a path pointer lands on: an exact root-relative path wins outright; otherwise
@@ -721,12 +728,12 @@ function prefixBefore(before, previous, repo, pattern) {
   if (!pattern) return undefined;
   const lead = before.replace(/^[\s*#/]*/, "") === "" ? `${previous.trimEnd()} ` : before;
   const written = pattern.exec(lead)?.[1]?.toLowerCase();
-  const named = [...repo.siblingNames(), ...repo.config.self].find((name) => name.toLowerCase() === written);
+  const named = repo.prefixNames().find((name) => name.toLowerCase() === written);
   return repo.config.self.includes(named) ? undefined : named;
 }
 
 function siblingPrefixPattern(repo) {
-  const names = [...repo.siblingNames(), ...repo.config.self];
+  const names = repo.prefixNames();
   if (names.length === 0) return undefined;
   const alternatives = names.map((name) => name.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&")).join("|");
   return new RegExp(`(?:^|[\\s(\\[*_"'])(${alternatives})(?:'s)?:?\\s+$`, "i");
@@ -960,13 +967,18 @@ function plural(count, word) {
   return `${count} ${word}${count === 1 ? "" : "s"}`;
 }
 
+// What git hands a hook: inherited, they point every git call, a sibling's too, at the hook's repo.
+const HOOK_GIT_VARIABLES = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX"];
+
 function main(argv) {
   let root;
   let siblingsBeside;
+  let staged = false;
   let reportOnly = false;
   const only = [];
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--report-only") reportOnly = true;
+    else if (argv[i] === "--staged") staged = true;
     else if (argv[i] === "--root") root = argv[++i];
     else if (argv[i] === "--siblings-beside") siblingsBeside = resolve(argv[++i]);
     else if (argv[i].startsWith("--")) {
@@ -974,6 +986,15 @@ function main(argv) {
       return 2;
     } else only.push(argv[i].replace(/^\.\//, ""));
   }
+  if (staged) {
+    const listed = execFileSync("git", ["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR"], { encoding: "utf8" }).split("\0").filter(Boolean);
+    if (listed.length === 0) {
+      process.stdout.write("pointer-check: no failing pointers (nothing staged)\n");
+      return 0;
+    }
+    only.push(...listed);
+  }
+  for (const name of HOOK_GIT_VARIABLES) delete process.env[name];
   root = resolve(root ?? execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim());
   const { failures, pointerCount, fileCount } = check(root, { only, siblingsBeside });
   for (const failure of failures) process.stdout.write(`${failure.file}:${failure.line}: ${failure.message}\n`);

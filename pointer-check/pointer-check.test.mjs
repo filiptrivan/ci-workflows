@@ -31,7 +31,11 @@ function repo(files, parent = mkdtempSync(join(tmpdir(), "pointer-check-")), nam
 }
 
 function check(dir, ...args) {
-  const run = spawnSync("node", [CLI, ...args], { cwd: dir, encoding: "utf8" });
+  return checkIn(dir, {}, ...args);
+}
+
+function checkIn(dir, env, ...args) {
+  const run = spawnSync("node", [CLI, ...args], { cwd: dir, encoding: "utf8", env: { ...process.env, ...env } });
   const lines = run.stdout.split("\n").filter((line) => line.length > 0 && !line.startsWith("pointer-check:"));
   return { status: run.status, lines, stdout: run.stdout, stderr: run.stderr };
 }
@@ -236,6 +240,16 @@ test("a copy of a checkout checks its sibling pointers in the siblings beside th
   const copy = repo(files);
   assert.deepEqual(check(copy).lines, [], "beside nothing, the sibling pointers are skipped");
   assert.deepEqual(check(copy, "--siblings-beside", checkout).lines, ["docs/live.md:1: `umbrella GONE.md` resolves to nothing"]);
+});
+
+test("--staged checks the files the index stages, as a pre-commit hook asks, and with none staged checks nothing", () => {
+  const dir = repo({ "src/a.ts": "export const a = 1;\n", "docs/staged.md": "`src/gone.ts`\n" });
+  writeTree(dir, { "docs/draft.md": "another session's `src/also-gone.ts`\n" });
+  assert.deepEqual(check(dir, "--staged").lines, ["docs/staged.md:1: `src/gone.ts` resolves to nothing"]);
+  execFileSync("git", ["commit", "-qm", "seed", "--no-verify"], { cwd: dir, env: { ...process.env, GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@a", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@a" } });
+  const none = check(dir, "--staged");
+  assert.deepEqual(none.lines, []);
+  assert.equal(none.status, 0);
 });
 
 test("report-only prints every failure and exits zero", () => {
