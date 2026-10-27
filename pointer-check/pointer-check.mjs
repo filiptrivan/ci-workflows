@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Fails when prose names a file, a symbol or an ADR that does not exist, or names it ambiguously.
 //
-//   node pointer-check.mjs [--root <dir>] [--report-only] [path ...]
+//   node pointer-check.mjs [--root <dir>] [--siblings-beside <checkout>] [--report-only] [path ...]
 //
 // Prose is every Markdown file and every comment in a code file, minus the exempt set. A pointer
 // is one of four explicit forms; anything else, a bare backticked word above all, is never one,
@@ -20,7 +20,9 @@
 //                     when the words beside it pick one of the files that share it
 //   any of the above prefixed with a sibling repo's name (`pa-cms/Backend/X.cs`, pa-cms `X.Y`,
 //                     pa-cms ADR 0009); checked in that sibling when it is checked out beside
-//                     this one, skipped when it is not, so a lone clone's CI never fails on it
+//                     this one, skipped when it is not, so a lone clone's CI never fails on it;
+//                     --siblings-beside reads them beside <checkout> instead, for a copy of it
+//                     (a throwaway worktree at a pinned commit, whose own `..` holds no sibling)
 //
 // The whole tree is scanned on every run, never a diff: a rename in one file strands a pointer
 // in another file the diff does not touch.
@@ -189,8 +191,9 @@ function words(text) {
 
 // One checkout: its files, and the indexes a pointer resolves against, built on first use.
 class Repo {
-  constructor(root) {
+  constructor(root, siblingsBeside = root) {
     this.root = root;
+    this.siblingsBeside = siblingsBeside;
     this.config = Repo.readConfig(root);
     const { files, linked } = Repo.listFiles(root);
     // `scanned` are real files; `files` adds the paths that reach a file through a symlinked
@@ -263,7 +266,7 @@ class Repo {
     if (!Object.hasOwn(this.config.siblings, name)) return undefined;
     if (!this.siblings.has(name)) {
       const paths = [this.config.siblings[name]].flat();
-      const found = paths.map((path) => resolve(this.root, path)).find((path) => existsSync(join(path, ".git")));
+      const found = paths.map((path) => resolve(this.siblingsBeside, path)).find((path) => existsSync(join(path, ".git")));
       this.siblings.set(name, found ? new Repo(found) : null);
     }
     return this.siblings.get(name);
@@ -712,11 +715,13 @@ function decodeURIComponentSafe(text) {
 
 // The sibling a repo name just before a pointer names, on its line or, when the pointer opens the
 // line, at the end of the previous one; undefined for no name or this repo's own. A comment line's
-// decoration (` * `, `// `, `# `) is not text before the pointer.
+// decoration (` * `, `// `, `# `) is not text before the pointer. The name matches in any case, as
+// a sentence opens on "Umbrella `GLOSSARY.md`", and is returned as configured.
 function prefixBefore(before, previous, repo, pattern) {
   if (!pattern) return undefined;
   const lead = before.replace(/^[\s*#/]*/, "") === "" ? `${previous.trimEnd()} ` : before;
-  const named = pattern.exec(lead)?.[1];
+  const written = pattern.exec(lead)?.[1]?.toLowerCase();
+  const named = [...repo.siblingNames(), ...repo.config.self].find((name) => name.toLowerCase() === written);
   return repo.config.self.includes(named) ? undefined : named;
 }
 
@@ -724,7 +729,7 @@ function siblingPrefixPattern(repo) {
   const names = [...repo.siblingNames(), ...repo.config.self];
   if (names.length === 0) return undefined;
   const alternatives = names.map((name) => name.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&")).join("|");
-  return new RegExp(`(?:^|[\\s(\\[*_"'])(${alternatives})(?:'s)?:?\\s+$`);
+  return new RegExp(`(?:^|[\\s(\\[*_"'])(${alternatives})(?:'s)?:?\\s+$`, "i");
 }
 
 // The checkout a pointer resolves in: this repo, or the sibling its prefix names (undefined when
@@ -865,8 +870,8 @@ function prose(repo, file) {
   return language.scan(text).comments.map((line) => ({ ...line, kind: "comment" }));
 }
 
-function check(root, { only = [] } = {}) {
-  const repo = new Repo(root);
+function check(root, { only = [], siblingsBeside } = {}) {
+  const repo = new Repo(root, siblingsBeside);
   const exempt = exemptMatcher([...DEFAULT_EXEMPT, ...repo.config.exempt]);
   const selected = (file) =>
     only.length === 0 || only.some((path) => file === path || file.startsWith(path.endsWith("/") ? path : `${path}/`));
@@ -957,18 +962,20 @@ function plural(count, word) {
 
 function main(argv) {
   let root;
+  let siblingsBeside;
   let reportOnly = false;
   const only = [];
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--report-only") reportOnly = true;
     else if (argv[i] === "--root") root = argv[++i];
+    else if (argv[i] === "--siblings-beside") siblingsBeside = resolve(argv[++i]);
     else if (argv[i].startsWith("--")) {
       process.stderr.write(`pointer-check: unknown option ${argv[i]}\n`);
       return 2;
     } else only.push(argv[i].replace(/^\.\//, ""));
   }
   root = resolve(root ?? execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim());
-  const { failures, pointerCount, fileCount } = check(root, { only });
+  const { failures, pointerCount, fileCount } = check(root, { only, siblingsBeside });
   for (const failure of failures) process.stdout.write(`${failure.file}:${failure.line}: ${failure.message}\n`);
   const failingFiles = new Set(failures.map((failure) => failure.file)).size;
   process.stdout.write(

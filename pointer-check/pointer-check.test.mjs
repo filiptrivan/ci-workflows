@@ -225,6 +225,19 @@ test("a pointer into a sibling repo is checked when the sibling is present", () 
   ]);
 });
 
+test("a copy of a checkout checks its sibling pointers in the siblings beside the checkout it names", () => {
+  const parent = mkdtempSync(join(tmpdir(), "pointer-check-"));
+  repo({ "GLOSSARY.md": "# Glossary\n" }, parent, "umbrella");
+  const files = {
+    ".pointer-check.jsonc": JSON.stringify({ siblings: { umbrella: ["../umbrella"] } }),
+    "docs/live.md": "Fine: umbrella `GLOSSARY.md`. Broken: umbrella `GONE.md`.\n",
+  };
+  const checkout = repo(files, parent);
+  const copy = repo(files);
+  assert.deepEqual(check(copy).lines, [], "beside nothing, the sibling pointers are skipped");
+  assert.deepEqual(check(copy, "--siblings-beside", checkout).lines, ["docs/live.md:1: `umbrella GONE.md` resolves to nothing"]);
+});
+
 test("report-only prints every failure and exits zero", () => {
   const dir = repo({ "docs/live.md": "`src/gone.ts`\n" });
   const result = check(dir, "--report-only");
@@ -416,6 +429,19 @@ test("a wrapped prefix still counts inside a block comment whose lines start wit
     "src/a.ts": "/**\n * The rank is ported from pa-cms\n * `Backend/Ranking.cs`, which we cannot import.\n */\nexport const a = 1;\n",
   });
   assert.deepEqual(check(dir).lines, []);
+});
+
+test("a sibling prefix capitalized at a sentence start still names the sibling", () => {
+  const parent = mkdtempSync(join(tmpdir(), "pointer-check-"));
+  repo({ "GLOSSARY.md": "# Glossary\n" }, parent, "umbrella");
+  const dir = repo(
+    {
+      ".pointer-check.jsonc": JSON.stringify({ siblings: { umbrella: ["../umbrella"] } }),
+      "docs/live.md": "The terms are fixed. Umbrella `GLOSSARY.md` holds them.\nUmbrella `GONE.md` does not.\n",
+    },
+    parent,
+  );
+  assert.deepEqual(check(dir).lines, ["docs/live.md:2: `umbrella GONE.md` resolves to nothing"]);
 });
 
 test("a wrapped prefix opened by a parenthesis still names the repo of the ADR on the next line", () => {
