@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-// Fails when prose names a file, a symbol or an ADR that does not exist, or names it ambiguously.
+// Fails when prose names a file, a symbol, an ADR or a heading that does not exist, or names it
+// ambiguously.
 //
 //   node pointer-check.mjs [--root <dir>] [--siblings-beside <checkout>] [--staged] [--report-only] [path ...]
 //
 // Prose is every Markdown file and every comment in a code file, minus the exempt set. A pointer
-// is one of four explicit forms; anything else, a bare backticked word above all, is never one,
+// is one of five explicit forms; anything else, a bare backticked word above all, is never one,
 // because a missed pointer costs less than a false failure that teaches people to ignore the check:
 //
 //   a file path       `apps/rs/next.config.ts`, `scripts/evals/`, a relative Markdown link;
@@ -18,6 +19,10 @@
 //                     (a test title that outlived a rename)
 //   an ADR number     ADR 0047, ADR-0047; resolves when exactly one docs/adr/ file has it, or
 //                     when the words beside it pick one of the files that share it
+//   a heading         a backticked file path, an arrow (→ or ->) and a quoted text, as in
+//                     `CLAUDE.md` → "Repo info"; resolves when the Markdown file it lands on holds
+//                     exactly one heading, table row's first cell or bold run opening a line with
+//                     that text (how they are matched and ranked: headingPointer)
 //   any of the above prefixed with a sibling repo's name (`pa-cms/Backend/X.cs`, pa-cms `X.Y`,
 //                     pa-cms ADR 0009); checked in that sibling when it is checked out beside
 //                     this one, skipped when it is not, so a lone clone's CI never fails on it;
@@ -219,6 +224,7 @@ class Repo {
     }
     this.topLevel = new Set(this.files.map((file) => file.split("/")[0]));
     this.siblings = new Map();
+    this.headingTargetsByFile = new Map();
   }
 
   static readConfig(root) {
@@ -283,16 +289,39 @@ class Repo {
     return [...this.siblingNames(), ...this.config.self];
   }
 
-  // Counts what a path pointer lands on: an exact root-relative path wins outright; otherwise
-  // every file or directory the path is a segment-aligned suffix of.
   resolvePath(path) {
-    if (this.hasExact(path)) return 1;
+    return this.pathTargets(path).length;
+  }
+
+  // What a path pointer lands on: an exact root-relative path (or the extensionless specifier an
+  // import resolves) wins outright; otherwise every file or directory the path is a
+  // segment-aligned suffix of.
+  pathTargets(path) {
     const clean = path.replace(/\/+$/, "");
+    if (this.hasExact(path)) return [clean];
     const base = clean.slice(clean.lastIndexOf("/") + 1);
     const suffix = `/${clean}`;
     const files = (this.byBase.get(base) ?? []).filter((file) => file.endsWith(suffix));
     const dirs = (this.dirsByBase.get(base) ?? []).filter((dir) => dir.endsWith(suffix));
-    return files.length + dirs.length;
+    return [...files, ...dirs];
+  }
+
+  // A bold run that wraps counts to its line's end: the frozen TODO ledger's item titles wrap.
+  headingTargets(file) {
+    if (!this.headingTargetsByFile.has(file)) {
+      const text = readText(join(this.root, file)) ?? "";
+      const found = [];
+      for (const { text: line } of markdownLines(text)) {
+        const title = /^ {0,3}#{1,6}\s+(.*?)(?:\s+#+)?\s*$/.exec(line)?.[1];
+        const other =
+          /^\s*\|((?:[^|\\]|\\.)*)\|/.exec(line)?.[1] ??
+          /^[\s>]*(?:(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?)?\*\*(.+?)(?:\*\*|$)/.exec(line)?.[1];
+        const key = headingKey(title ?? other ?? "");
+        if (key) found.push({ key, isHeading: title !== undefined });
+      }
+      this.headingTargetsByFile.set(file, found);
+    }
+    return this.headingTargetsByFile.get(file);
   }
 
   // An exact root-relative file or directory, or, for an extensionless module specifier, the file
@@ -644,15 +673,23 @@ function markdownLines(text) {
 }
 
 const SPAN = /(`+)(?!`)([\s\S]*?[^`])\1(?!`)/g;
+// What follows a file pointer to make it a heading pointer.
+const HEADING_AFTER = /^\s*(→|->)\s*"([^"]+)"/;
+// A comment line's decoration (` * `, `// `, `# `), which is not text of the prose it carries.
+const DECORATION = /^[\s*#/]*/;
 
 // Every pointer in one line of prose, as { column, display, resolve } where resolve() returns how
-// many targets the pointer lands on, or undefined when it cannot be checked here.
-// `previous` is the prose line before this one: wrapped prose leaves a repo's name at the end of
-// one line and its pointer at the start of the next.
-function pointersIn(text, { repo, file, kind, previous = "" }) {
+// many targets the pointer lands on, or undefined when it cannot be checked here; a path pointer
+// also carries located(), the checkout and path it names, and a heading pointer `heading: true`.
+// `previous` and `next` are the prose lines around this one: wrapped prose leaves a repo's name at
+// the end of one line and its pointer at the start of the next, or a heading pointer's arrow or
+// quoted text on the next.
+function pointersIn(text, { repo, file, kind, previous = "", next = "" }) {
   const pointers = [];
   const masked = text.replace(SPAN, (span) => " ".repeat(span.length));
   const siblingPrefix = siblingPrefixPattern(repo);
+  // Markdown has no decoration: a wrapped line may open with text's own `/` or `#`.
+  const wrapped = `${text} ${kind === "comment" ? next.replace(DECORATION, "") : next}`;
 
   for (const match of text.matchAll(SPAN)) {
     const content = match[2].trim();
@@ -660,8 +697,13 @@ function pointersIn(text, { repo, file, kind, previous = "" }) {
     const prefix = prefixBefore(before, previous, repo, siblingPrefix);
     const afterSee = kind === "comment" && /\bsee\s+$/i.test(before);
     const pointer = classify(content, { repo, file, prefix, bareSymbols: afterSee });
-    if (pointer) pointers.push({ column: match.index, ...pointer });
-    else if (/^ADRs? ?-?\d{4}$/.test(content)) {
+    if (pointer) {
+      pointers.push({ column: match.index, ...pointer });
+      const quoted = HEADING_AFTER.exec(wrapped.slice(match.index + match[0].length));
+      if (quoted && pointer.located) {
+        pointers.push({ column: match.index, ...headingPointer(pointer, quoted[1], quoted[2], { repo, file }) });
+      }
+    } else if (/^ADRs? ?-?\d{4}$/.test(content)) {
       const number = content.match(/\d{4}/)[0];
       pointers.push(adrPointer({ repo, prefix, number, display: shown(prefix, content), context: text, column: match.index }));
     }
@@ -721,12 +763,11 @@ function decodeURIComponentSafe(text) {
 }
 
 // The sibling a repo name just before a pointer names, on its line or, when the pointer opens the
-// line, at the end of the previous one; undefined for no name or this repo's own. A comment line's
-// decoration (` * `, `// `, `# `) is not text before the pointer. The name matches in any case, as
-// a sentence opens on "Umbrella `GLOSSARY.md`", and is returned as configured.
+// line, at the end of the previous one; undefined for no name or this repo's own. The name matches
+// in any case, as a sentence opens on "Umbrella `GLOSSARY.md`", and is returned as configured.
 function prefixBefore(before, previous, repo, pattern) {
   if (!pattern) return undefined;
-  const lead = before.replace(/^[\s*#/]*/, "") === "" ? `${previous.trimEnd()} ` : before;
+  const lead = before.replace(DECORATION, "") === "" ? `${previous.trimEnd()} ` : before;
   const written = pattern.exec(lead)?.[1]?.toLowerCase();
   const named = repo.prefixNames().find((name) => name.toLowerCase() === written);
   return repo.config.self.includes(named) ? undefined : named;
@@ -755,6 +796,67 @@ function adrPointer({ repo, prefix, number, display, context, column }) {
     display,
     resolve: () => ownerOf(repo, prefix)?.resolveAdr(number, context),
   };
+}
+
+// A file pointer's heading: how many targets in the files it lands on the quoted text names, by
+// their whole text or by their lead, the text before a qualifier ("Where a fact goes" names
+// `## Where a fact goes (2026-10-03)`), counting only the best-ranked (rankOf). Leads are how the
+// tree cites (67 of the umbrella's 194 resolving heading pointers, measured 2026-10-25), and a
+// qualifier carries dates that change; the price is that a removed heading whose text leads a
+// surviving one goes unseen. A bare file name names the file beside the pointer's own when there
+// is one, as a reader takes it, unless that is the pointer's own file (a nested `CLAUDE.md` naming
+// `CLAUDE.md` means the root's). Skipped unless the file pointer itself resolves, which fails it
+// otherwise.
+function headingPointer(filePointer, arrow, text, { repo, file }) {
+  return {
+    display: `\`${filePointer.display}\` ${arrow} "${text}"`,
+    heading: true,
+    resolve: () => {
+      if (filePointer.resolve() !== 1) return undefined;
+      const { owner, path } = filePointer.located();
+      const beside = owner === repo && !path.includes("/") ? posix.join(posix.dirname(file), path) : undefined;
+      const landed = beside !== file && owner.fileSet.has(beside) ? [beside] : owner.pathTargets(path);
+      const files = landed.filter((markdown) => MARKDOWN_EXTENSIONS.has(extensionOf(markdown)));
+      if (files.length === 0) return undefined;
+      const key = headingKey(text);
+      const ranks = files
+        .flatMap((markdown) => owner.headingTargets(markdown).map((target) => rankOf(target, key)))
+        .filter((rank) => rank !== undefined);
+      if (ranks.length === 0) return 0;
+      const best = Math.min(...ranks);
+      return ranks.filter((rank) => rank === best).length;
+    },
+  };
+}
+
+// A lead ends at a qualifier's opening punctuation; a section number (`7.1`) leads its title too.
+const LEAD_END = /^(?:\s*[([—–→]|[.,:;!?](?:\s|$)|\s+-\s)/;
+const SECTION_NUMBER = /^\d+(?:\.\d+)*\.?$/;
+
+// How well a target answers a heading pointer's text, lower is better; undefined when it does not.
+// A heading outranks a table key or bold run, then a whole text outranks a lead, so the bold
+// summary line naming a section below it, or a longer heading the text only leads, is not a
+// second target.
+function rankOf(target, key) {
+  if (!target.key.startsWith(key)) return undefined;
+  const rest = target.key.slice(key.length);
+  const lead = LEAD_END.test(rest) || (SECTION_NUMBER.test(key) && /^\s/.test(rest));
+  if (rest !== "" && !lead) return undefined;
+  return (target.isHeading ? 0 : 2) + (rest === "" ? 0 : 1);
+}
+
+// What a heading pointer's text and a target are compared as: case, emphasis, strikethrough, code
+// backticks, curly apostrophes and curly double quotes never decide a match. A pointer's text
+// cannot hold a straight double quote, so it quotes a title's own as curly ones (the frozen
+// TODO ledger's `**"Pozovi kurira" is not idempotent`).
+function headingKey(text) {
+  return text
+    .replace(/[`*~]/g, "")
+    .replace(/’/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 }
 
 // What a backticked span or a `see` target is: a path, a symbol, or not a pointer at all.
@@ -800,7 +902,7 @@ function pathPointer(content, { repo, file, prefix }) {
         const owner = ownerOf(repo, prefix);
         return owner ? Number(owner.hasBaseName(path)) : undefined;
       },
-      ignorable: () => ({ owner: ownerOf(repo, prefix), path }),
+      located: () => ({ owner: ownerOf(repo, prefix), path }),
     };
   }
   const first = path.split("/")[0];
@@ -817,7 +919,7 @@ function pathPointer(content, { repo, file, prefix }) {
         const sibling = repo.sibling(first);
         return sibling && rest ? sibling.resolvePath(rest) : undefined;
       },
-      ignorable: () => ({ owner: repo.sibling(first), path: rest }),
+      located: () => ({ owner: repo.sibling(first), path: rest }),
     };
   }
   if (DOMAIN.test(first)) return undefined;
@@ -831,7 +933,7 @@ function pathPointer(content, { repo, file, prefix }) {
   return {
     display: shown(prefix, path),
     resolve: () => ownerOf(repo, prefix)?.resolvePath(path),
-    ignorable: () => ({ owner: ownerOf(repo, prefix), path }),
+    located: () => ({ owner: ownerOf(repo, prefix), path }),
   };
 }
 
@@ -862,7 +964,7 @@ function relativePointer(path, { repo, file }) {
       const { owner, path: within } = located();
       return owner ? Number(owner.hasExact(within)) : undefined;
     },
-    ignorable: located,
+    located,
   };
 }
 
@@ -891,8 +993,9 @@ function check(root, { only = [], siblingsBeside } = {}) {
     if (lines.length === 0) continue;
     fileCount++;
     let previous = "";
-    for (const { line, text, kind } of lines) {
-      const found = pointersIn(text, { repo, file, kind, previous });
+    for (const [index, { line, text, kind }] of lines.entries()) {
+      const next = lines[index + 1]?.line === line + 1 ? lines[index + 1].text : "";
+      const found = pointersIn(text, { repo, file, kind, previous, next });
       previous = text;
       for (const pointer of found) {
         const targets = pointer.resolve();
@@ -903,8 +1006,8 @@ function check(root, { only = [], siblingsBeside } = {}) {
           file,
           line,
           column: pointer.column,
-          ignorable: targets === 0 ? pointer.ignorable?.() : undefined,
-          message: `\`${pointer.display}\` ${targets === 0 ? "resolves to nothing" : `resolves to ${targets} targets`}`,
+          ignorable: targets === 0 ? pointer.located?.() : undefined,
+          message: `${pointer.heading ? pointer.display : `\`${pointer.display}\``} ${targets === 0 ? "resolves to nothing" : `resolves to ${targets} targets`}`,
         });
       }
     }
@@ -997,13 +1100,15 @@ function main(argv) {
   for (const name of HOOK_GIT_VARIABLES) delete process.env[name];
   root = resolve(root ?? execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim());
   const { failures, pointerCount, fileCount } = check(root, { only, siblingsBeside });
-  for (const failure of failures) process.stdout.write(`${failure.file}:${failure.line}: ${failure.message}\n`);
+  for (const failure of failures) {
+    process.stdout.write(`${failure.file}:${failure.line}: ${failure.message}\n`);
+  }
   const failingFiles = new Set(failures.map((failure) => failure.file)).size;
-  process.stdout.write(
+  const summary =
     failures.length === 0
-      ? `pointer-check: no failing pointers (${plural(pointerCount, "pointer")} checked in ${plural(fileCount, "file")})\n`
-      : `pointer-check: ${plural(failures.length, "failing pointer")} in ${plural(failingFiles, "file")}${reportOnly ? " (report only)" : ""}\n`,
-  );
+      ? `no failing pointers (${plural(pointerCount, "pointer")} checked in ${plural(fileCount, "file")})`
+      : `${plural(failures.length, "failing pointer")} in ${plural(failingFiles, "file")}${reportOnly ? " (report only)" : ""}`;
+  process.stdout.write(`pointer-check: ${summary}\n`);
   return failures.length > 0 && !reportOnly ? 1 : 0;
 }
 

@@ -209,8 +209,8 @@ then `git fetch --tags --force` (a plain pull won't update the tag).
 
 ## Pointer check
 
-Fails CI when prose names a file, a symbol or an ADR that resolves to nothing or to more than one
-target. What counts as prose and as a pointer, why the whole tree is scanned on every run, the
+Fails CI when prose names a file, a symbol, an ADR or a heading that resolves to nothing or to more
+than one target. What counts as prose and as a pointer, why the whole tree is scanned on every run, the
 `.pointer-check.jsonc` schema and the paths that are always exempt: the header of
 `pointer-check/pointer-check.mjs`.
 
