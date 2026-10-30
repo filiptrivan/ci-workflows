@@ -232,3 +232,10 @@ Add the caller, a job in an existing workflow:
 ```
 
 Its tests: `node --test pointer-check/pointer-check.test.mjs`, run by `.github/workflows/test.yml`.
+
+---
+
+## Workflows on `ubuntu-slim`
+
+A job here moves to `ubuntu-slim` only within slim's limits: the header of
+`workflow-policy/slim-jobs.test.mjs`, run by `.github/workflows/test.yml`.
