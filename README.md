@@ -61,7 +61,7 @@ jobs:
       checks: write
       id-token: write
       actions: read
-    uses: filiptrivan/ci-workflows/.github/workflows/claude-gate.yml@v1
+    uses: filiptrivan/ci-workflows/.github/workflows/claude-gate.yml@main
     with:
       # same_repo_only: true   # PUBLIC repos only: skip fork PRs (they run without secrets)
       review_spec: |
@@ -177,19 +177,14 @@ caller has a single private sibling (one deploy key in the job → no SSH-agent 
 ## Releasing changes (maintainers only)
 
 **This repo is the root of trust** — a change here runs with *every* caller's token. It is
-**solo-maintained by @filiptrivan**; write access is not granted to anyone else. Callers pin
-`@v1`, so to ship a change: edit the workflow, push to `main`, then move the `v1` tag (moving it
-ships every workflow here at once, the pointer check's script included, since `pointer-check.yml`
-checks out `checker_ref`, `v1` by default)
-(`git tag -f v1 && git push -f origin v1`). The anti-footgun ruleset blocks force-push/deletion
-on `main`; intentional history changes require disabling it first.
+**solo-maintained by @filiptrivan**; write access is not granted to anyone else. Callers call
+`@main`, so a push to `main` is the release: it ships every workflow here to every caller at once,
+the pointer check's script included, since `pointer-check.yml` checks it out at the commit the
+workflow was called at. The anti-footgun ruleset blocks force-push/deletion on `main`; intentional
+history changes require disabling it first.
 
-**⚠️ `v1` is a *moving* tag — resync before you move it.** A plain `git pull`/`git fetch` **never**
-updates an existing local tag, so after each release your local `v1` silently goes stale (still points
-at the previous commit) while the remote `v1` has advanced. Force-pushing from a stale checkout
-(`git tag -f v1 && git push -f origin v1`) would shove the remote `v1` **backwards** and break every
-caller pinned to `@v1`. Before releasing — or whenever local `v1` looks wrong — resync first: `git pull`
-then `git fetch --tags --force` (a plain pull won't update the tag).
+**`v1` is frozen** at 163c286 and never moves again: it stays only for a caller not yet moved to
+`@main`. A new caller calls `@main`.
 
 ### Gotchas when editing `claude-gate.yml`
 - **Verdict transport:** the pinned `claude-code-action` build does **not** surface
@@ -226,7 +221,7 @@ Add the caller, a job in an existing workflow:
 
 ```yaml
   pointers:
-    uses: filiptrivan/ci-workflows/.github/workflows/pointer-check.yml@v1
+    uses: filiptrivan/ci-workflows/.github/workflows/pointer-check.yml@main
     with:
       report_only: true   # drop once the tree reports zero failures
 ```

@@ -16,10 +16,6 @@ on:
         description: Print every failing pointer but pass, while a tree still has failures to fix.
         type: boolean
         default: false
-      checker_ref:
-        description: The ci-workflows ref whose checker runs; keep it equal to the ref the caller pins.
-        type: string
-        default: v1
 
 jobs:
   pointers:
@@ -35,10 +31,12 @@ jobs:
           path: repo
           persist-credentials: false
 
+      # The checker from the commit this workflow file was called at, whatever ref the caller
+      # names, so the two never come from different commits.
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: filiptrivan/ci-workflows
-          ref: ${{ inputs.checker_ref }}
+          ref: ${{ job.workflow_sha }}
           path: checker
           persist-credentials: false
 
