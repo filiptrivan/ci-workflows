@@ -179,11 +179,11 @@ caller has a single private sibling (one deploy key in the job → no SSH-agent 
 **This repo is the root of trust** — a change here runs with *every* caller's token. It is
 **solo-maintained by @filiptrivan**; write access is not granted to anyone else. Callers call
 `@main`, so a push to `main` is the release: it ships every workflow here to every caller at once,
-the pointer check's script included, since `pointer-check.yml` checks it out at the commit the
-workflow was called at. The anti-footgun ruleset blocks force-push/deletion on `main`; intentional
+the pointer check's script included. The anti-footgun ruleset blocks force-push/deletion on `main`; intentional
 history changes require disabling it first.
 
-**`v1` is frozen** at 163c286 and never moves again: it stays only for a caller not yet moved to
+**`v1` is frozen** at 163c286, the last commit whose `pointer-check.yml` takes a `checker_ref`
+input, and never moves again: it stays only for a caller not yet moved to
 `@main`. A new caller calls `@main`.
 
 ### Gotchas when editing `claude-gate.yml`
