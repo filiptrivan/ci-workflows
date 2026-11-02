@@ -1023,7 +1023,10 @@ function check(root, { only = [], siblingsBeside } = {}) {
 //
 // git refuses a path that runs through a symlink ("beyond a symbolic link", pnpm's node_modules)
 // and fails the whole batch with it, so each path is asked about only up to its first symlinked
-// directory: an ignored directory before that point covers everything under it.
+// directory, that link included: an ignored directory before that point, or the link itself,
+// covers everything under it. A trailing-slash rule (`node_modules/`) matches no link, so a
+// worktree whose node_modules links to its main checkout's ignores the link by name, in its
+// info/exclude.
 function dropIgnored(failures) {
   const asked = new Map();
   for (const failure of failures) {
@@ -1049,14 +1052,15 @@ function dropIgnored(failures) {
   }
 }
 
-// The path itself and each directory above it, stopping before the first symlinked directory.
+// The path itself and each directory above it, stopping at the first symlinked directory, which is
+// asked about as the link it is.
 function ignoreCandidates(root, path) {
   const segments = path.replace(/\/+$/, "").split("/");
   const candidates = [];
   for (let i = 1; i < segments.length; i++) {
     const dir = segments.slice(0, i).join("/");
     try {
-      if (lstatSync(join(root, dir)).isSymbolicLink()) return candidates;
+      if (lstatSync(join(root, dir)).isSymbolicLink()) return [...candidates, dir];
     } catch {
       break;
     }
