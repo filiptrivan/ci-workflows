@@ -1,0 +1,14 @@
+diff --git a/.github/workflows/pointer-check.yml b/.github/workflows/pointer-check.yml
+index eb16bb0..7ef0353 100644
+--- a/.github/workflows/pointer-check.yml
++++ b/.github/workflows/pointer-check.yml
+@@ -24,7 +24,8 @@ on:
+ jobs:
+   pointers:
+     name: pointer check
+-    runs-on: ubuntu-latest
++    # ubuntu-slim, since the job is thin; workflow-policy/slim-jobs.test.mjs holds it to slim's limits.
++    runs-on: ubuntu-slim
+     timeout-minutes: 5
+     permissions:
+       contents: read
