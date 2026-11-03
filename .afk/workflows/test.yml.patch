@@ -1,7 +1,15 @@
 diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
-index 85eac5c..bc0282d 100644
+index 85eac5c..6c48596 100644
 --- a/.github/workflows/test.yml
 +++ b/.github/workflows/test.yml
+@@ -1,6 +1,6 @@
+ name: Test
+ 
+-# The pointer check's own tests, and the rule the workflows here keep; the reusable workflows run in
++# The pointer check's own tests, and the rules the workflows here keep; the reusable workflows run in
+ # their callers, not here.
+ 
+ on:
 @@ -14,7 +14,7 @@ permissions:
  jobs:
    pointer-check:
@@ -11,7 +19,7 @@ index 85eac5c..bc0282d 100644
      timeout-minutes: 5
      steps:
        - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-@@ -25,7 +25,7 @@ jobs:
+@@ -25,11 +25,11 @@ jobs:
  
    workflow-policy:
      name: workflow policy tests
@@ -20,3 +28,8 @@ index 85eac5c..bc0282d 100644
      timeout-minutes: 5
      steps:
        - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+         with:
+           node-version: 22
+-      - run: node --test workflow-policy/slim-jobs.test.mjs
++      - run: node --test workflow-policy/slim-jobs.test.mjs workflow-policy/pins.test.mjs

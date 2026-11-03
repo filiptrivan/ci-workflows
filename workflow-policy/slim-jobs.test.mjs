@@ -16,7 +16,8 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { effectiveWorkflows, slimJobProblems } from "./slim-jobs.mjs";
+import { slimJobProblems } from "./slim-jobs.mjs";
+import { effectiveWorkflows } from "./workflows.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
