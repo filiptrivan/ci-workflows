@@ -23,9 +23,13 @@
 //   - a listed file over the cap passes;
 //   - a listed file now under the cap, deleted or renamed fails until the commit removes its line;
 //   - a line added fails, so the list only shrinks, and a renamed file is a new, unlisted path.
-// A list compared with none (HEAD or the base holds no list) adds no line: that is the commit
-// that installs the check. At pre-commit a line is judged only when the commit touches its file
-// or removes the line, so another file's stale line never blocks a commit; CI judges every line.
+// A line is stale when its file is gone or no longer over the cap; a mark or a NUL that exempts a
+// listed file leaves its line alone, since the file is still over the cap. Where HEAD or the base
+// holds no list, the list is compared with the last one their history holds, so deleting the list
+// in one push never lets the next add a line; a history that never held one is the commit that
+// installs the check, and adds no line. At pre-commit a line is judged only when the commit
+// touches its file or removes the line, so another file's stale line never blocks a commit; CI
+// judges every line.
 
 import { spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
@@ -34,8 +38,8 @@ import { join } from "node:path";
 const CAP_BYTES = 20_000;
 const LIST = ".over-cap-list";
 
-const LISTED = "on the Over-cap list but now under the cap (or deleted, or renamed): remove its line in this commit";
-const ADDED = "a line added to the Over-cap list: the list only shrinks; split the file instead";
+const STALE_LINE = "on the Over-cap list but now under the cap (or deleted, or renamed): remove its line in this commit";
+const ADDED_LINE = "a line added to the Over-cap list: the list only shrinks; split the file instead";
 
 const SPLIT =
   "Split it before you commit, as its own commit, before your change. Split by design, never by\n" +
@@ -76,9 +80,9 @@ const RECIPES = {
 
 /**
  * Which recipe a file takes, read from its path. Among Markdown, a resident file first, since a
- * directory-scoped `CLAUDE.md` sits in `.claude/skills/` too; a skill's script or data file takes
- * the code recipe, not the skill's, which moves a branch of prose (on 2026-11-04 three of the
- * umbrella's over-cap files there were Python scripts).
+ * directory-scoped `CLAUDE.md` sits in `.claude/skills/` too. Only a skill's Markdown takes the
+ * skill's recipe, which moves a branch of prose; its scripts and data take their own kind's (on
+ * 2026-11-04 three of the umbrella's over-cap files there were Python scripts).
  */
 function kindOf(path) {
   const name = path.slice(path.lastIndexOf("/") + 1);
@@ -119,21 +123,22 @@ const nulSeparated = (buffer) => buffer.toString("utf8").split("\0").filter(Bool
 // A regular file's mode, 100644 or 100755: never a symlink (120000) or a submodule (160000).
 const REGULAR = /^100[0-7]{3}$/;
 
-/** Each regular file the index holds, as `{ path, sha }`. */
-function stagedFiles() {
-  return nulSeparated(git(["ls-files", "-s", "-z"])).flatMap((entry) => {
-    const [mode, sha] = entry.split(" ");
-    return REGULAR.test(mode) ? [{ path: entry.slice(entry.indexOf("\t") + 1), sha }] : [];
+/**
+ * Each regular file `args` lists, as `{ path, sha }`: `ls-files -s` and `ls-tree -r` both print
+ * `<mode> <fields>\t<path>`, the sha the `shaAt`th field.
+ */
+function regularFiles(args, shaAt) {
+  return nulSeparated(git(args)).flatMap((entry) => {
+    const tab = entry.indexOf("\t");
+    const fields = entry.slice(0, tab).split(" ");
+    return REGULAR.test(fields[0]) ? [{ path: entry.slice(tab + 1), sha: fields[shaAt] }] : [];
   });
 }
 
-/** Each regular file `ref`'s tree holds, as `{ path, sha }`. */
-function committedFiles(ref) {
-  return nulSeparated(git(["ls-tree", "-r", "-z", ref])).flatMap((entry) => {
-    const [mode, , sha] = entry.split(/[ \t]/);
-    return REGULAR.test(mode) ? [{ path: entry.slice(entry.indexOf("\t") + 1), sha }] : [];
-  });
-}
+const stagedFiles = () => regularFiles(["ls-files", "-s", "-z"], 1);
+const committedFiles = (ref) => regularFiles(["ls-tree", "-r", "-z", ref], 2);
+
+const isCommit = (ref) => spawnSync("git", ["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`]).status === 0;
 
 /** `files` with each blob's `bytes`. */
 function withSizes(files) {
@@ -152,9 +157,13 @@ const isSet = (value) => value === "set" || value === "true";
  */
 function judgedFiles(files, attributeSource) {
   if (files.length === 0) return [];
-  const fields = nulSeparated(
-    git(["check-attr", "-z", "--stdin", ...attributeSource, "linguist-generated", "linguist-vendored", "diff"], files.map((file) => `${file.path}\0`).join("")),
-  );
+  // `-z` prints `<path>\0<attribute>\0<value>\0` for each, and a value may be empty (`attr=`).
+  const fields = git(
+    ["check-attr", "-z", "--stdin", ...attributeSource, "linguist-generated", "linguist-vendored", "diff"],
+    files.map((file) => `${file.path}\0`).join(""),
+  )
+    .toString("utf8")
+    .split("\0");
   const marks = new Map(files.map((file) => [file.path, {}]));
   for (let at = 0; at + 2 < fields.length; at += 3) marks.get(fields[at])[fields[at + 1]] = fields[at + 2];
   const text = files.filter(({ path }) => {
@@ -172,12 +181,13 @@ function judgedFiles(files, attributeSource) {
   });
 }
 
-/** The files of `files` over the cap that the cap judges, `.gitattributes` read as `attributeSource` says. */
+/**
+ * The files of `files` over the cap: `big`, the path of every one, and `judged`, those the cap
+ * judges, `.gitattributes` read as `attributeSource` says.
+ */
 function overCap(files, attributeSource) {
-  return judgedFiles(
-    withSizes(files.filter((file) => file.path !== LIST)).filter((file) => file.bytes > CAP_BYTES),
-    attributeSource,
-  );
+  const big = withSizes(files.filter((file) => file.path !== LIST)).filter((file) => file.bytes > CAP_BYTES);
+  return { big: new Set(big.map((file) => file.path)), judged: judgedFiles(big, attributeSource) };
 }
 
 /** The Over-cap list `treeish` holds (`HEAD`, a base, or "" for the index) as a Set, or null when it holds none. */
@@ -190,6 +200,14 @@ function listAt(treeish) {
   return new Set(lines.map((line) => line.replace(/\r$/, "")).filter(Boolean));
 }
 
+/** The list `ref` holds, else the last its history held (before the commit that deleted it), else null. */
+function lastListAt(ref) {
+  const list = listAt(ref);
+  if (list || !isCommit(ref)) return list;
+  const deleting = git(["log", "-1", "--format=%H", ref, "--", LIST]).toString("utf8").trim();
+  return deleting ? listAt(`${deleting}^`) : null;
+}
+
 const grouped = (number) => String(number).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
 /** The refusal of a file over the cap: its size, then the recipe for its kind, then the footer. */
@@ -199,16 +217,15 @@ function sizeRefusal({ path, bytes }) {
 }
 
 /**
- * Every refusal, sorted by path: each file of `over` that `list` lacks, and each line of `list`
- * that `before` (the list it is compared with; null when no line counts as added) lacks, or whose
- * file `judgesLine` and that `over` lacks.
+ * Every refusal, sorted by path: each `judged` file `list` lacks, and each line of `list` that
+ * `before` (the list it is compared with; null when no line counts as added) lacks, or whose file
+ * `judgesLine` and is not among the `big` ones.
  */
-function refusalsOf(over, list, before, judgesLine) {
-  const refusals = over.filter((file) => !list.has(file.path)).map((file) => ({ path: file.path, text: sizeRefusal(file) }));
-  const overPaths = new Set(over.map((file) => file.path));
+function refusalsOf({ big, judged }, list, before, judgesLine) {
+  const refusals = judged.filter((file) => !list.has(file.path)).map((file) => ({ path: file.path, text: sizeRefusal(file) }));
   for (const path of list) {
-    if (before && !before.has(path)) refusals.push({ path, text: `size cap: ${path}: ${ADDED}\n` });
-    else if (judgesLine(path) && !overPaths.has(path)) refusals.push({ path, text: `size cap: ${path}: ${LISTED}\n` });
+    if (before && !before.has(path)) refusals.push({ path, text: `size cap: ${path}: ${ADDED_LINE}\n` });
+    else if (judgesLine(path) && !big.has(path)) refusals.push({ path, text: `size cap: ${path}: ${STALE_LINE}\n` });
   }
   return refusals.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
@@ -219,24 +236,22 @@ function refusalsOf(over, list, before, judgesLine) {
  * commit touches.
  */
 function stagedRefusals() {
-  const head = listAt("HEAD");
+  const head = lastListAt("HEAD");
   const list = listAt("") ?? new Set();
   const diff = (...filter) => new Set(nulSeparated(git(["diff", "--cached", "--name-only", "-z", "--no-renames", ...filter])));
   const touched = diff();
-  const changed = diff("--diff-filter=AMT");
+  const addedOrModified = diff("--diff-filter=AMT");
   const unlisted = new Set([...(head ?? [])].filter((path) => !list.has(path)));
-  const files = stagedFiles().filter((file) => changed.has(file.path) || unlisted.has(file.path));
+  const files = stagedFiles().filter((file) => addedOrModified.has(file.path) || unlisted.has(file.path));
   return { refusals: refusalsOf(overCap(files, ["--cached"]), list, head, (path) => touched.has(path)), judged: files.length };
 }
 
 /** CI's call: every file HEAD tracks and every line of its list, the list against `base`'s when given. */
 function treeRefusals(base) {
-  if (base !== undefined && spawnSync("git", ["rev-parse", "--verify", "--quiet", "--end-of-options", `${base}^{commit}`]).status !== 0) {
-    throw new GitError(`--base ${base} names no commit in this repo`);
-  }
+  if (base !== undefined && !isCommit(base)) throw new GitError(`--base ${base} names no commit in this repo`);
   const files = committedFiles("HEAD");
   const list = listAt("HEAD") ?? new Set();
-  const before = base === undefined ? null : listAt(base);
+  const before = base === undefined ? null : lastListAt(base);
   return { refusals: refusalsOf(overCap(files, ["--source", "HEAD"]), list, before, () => true), judged: files.length };
 }
 
@@ -245,7 +260,7 @@ const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
 /** Writes the list from the staged tree, the one the commit that installs the check lands. */
 function writeList() {
   const paths = overCap(stagedFiles(), ["--cached"])
-    .map((file) => file.path)
+    .judged.map((file) => file.path)
     .sort();
   writeFileSync(join(git(["rev-parse", "--show-toplevel"]).toString("utf8").trim(), LIST), paths.map((path) => `${path}\n`).join(""));
   process.stdout.write(`size cap: wrote ${LIST}, ${plural(paths.length, "file")} over the cap\n`);
@@ -258,8 +273,13 @@ function main(argv) {
   for (let at = 0; at < argv.length; at++) {
     if (argv[at] === "--staged") staged = true;
     else if (argv[at] === "--write-list") write = true;
-    else if (argv[at] === "--base" && at + 1 < argv.length) base = argv[++at];
-    else {
+    else if (argv[at] === "--base") {
+      if (at + 1 === argv.length) {
+        process.stderr.write("size cap: --base needs a ref\n");
+        return 2;
+      }
+      base = argv[++at];
+    } else {
       process.stderr.write(`size cap: unknown option ${argv[at]}\n`);
       return 2;
     }

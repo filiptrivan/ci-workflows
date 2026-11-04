@@ -178,15 +178,18 @@ const KINDS = {
 test("each kind of file prints only its own recipe, read from its path, and always the footer", () => {
   const dir = repo({}, Object.fromEntries(Object.keys(KINDS).map((path) => [path, text(25_000)])));
 
-  const refused = run(dir, "--staged");
+  const staged = run(dir, "--staged");
+  commit(dir);
 
-  assert.equal(refused.status, 1);
-  const blocks = refused.out.split(/^(?=size cap: )/m).filter((block) => / is 25,000 bytes/.test(block));
-  assert.equal(blocks.length, Object.keys(KINDS).length);
-  for (const block of blocks) {
-    const path = block.slice("size cap: ".length, block.indexOf(" is "));
-    const header = `size cap: ${path} is 25,000 bytes = 6,250 tokens (bytes/4). The cap is 5,000 tokens (20,000 bytes).`;
-    assert.equal(block, `${header}\n\n${SPLIT}\n\n${RECIPES[KINDS[path]]}\n\n${FOOTER}\n\n`, path);
+  for (const refused of [staged, run(dir)]) {
+    assert.equal(refused.status, 1);
+    const blocks = refused.out.split(/^(?=size cap: )/m).filter((block) => / is 25,000 bytes/.test(block));
+    assert.equal(blocks.length, Object.keys(KINDS).length);
+    for (const block of blocks) {
+      const path = block.slice("size cap: ".length, block.indexOf(" is "));
+      const header = `size cap: ${path} is 25,000 bytes = 6,250 tokens (bytes/4). The cap is 5,000 tokens (20,000 bytes).`;
+      assert.equal(block, `${header}\n\n${SPLIT}\n\n${RECIPES[KINDS[path]]}\n\n${FOOTER}\n\n`, path);
+    }
   }
 });
 
@@ -194,20 +197,21 @@ test("each kind of file prints only its own recipe, read from its path, and alwa
 
 test("a file .gitattributes marks linguist-generated or linguist-vendored is exempt, its mark staged in the same commit", () => {
   const files = {
-    ".gitattributes": "pnpm-lock.yaml linguist-generated\napi.ts linguist-generated=true\nmanual/** linguist-vendored\nhand.ts -linguist-generated\n",
+    ".gitattributes": "pnpm-lock.yaml linguist-generated\napi.ts linguist-generated=true\nmanual/** linguist-vendored\nhand.ts -linguist-generated\nempty.ts linguist-generated=\n",
     "pnpm-lock.yaml": text(90_000),
     "api.ts": text(90_000),
     "manual/bank.md": text(90_000),
     "hand.ts": text(25_000),
+    "empty.ts": text(25_000),
   };
   const dir = repo({}, files);
 
   const refused = run(dir, "--staged");
 
   assert.equal(refused.status, 1);
-  assert.equal(refused.out.match(/^size cap: \S+ is/gm).join("\n"), "size cap: hand.ts is");
+  assert.deepEqual(sizeLines(refused.out), ["size cap: empty.ts is over", "size cap: hand.ts is over"]);
   commit(dir);
-  assert.equal(run(dir).out.match(/^size cap: \S+ is/gm).join("\n"), "size cap: hand.ts is");
+  assert.deepEqual(sizeLines(run(dir).out), ["size cap: empty.ts is over", "size cap: hand.ts is over"]);
 });
 
 test("a mark in a person's global attributes file exempts nothing", () => {
@@ -216,6 +220,8 @@ test("a mark in a person's global attributes file exempts nothing", () => {
   git(dir, "config", "core.attributesFile", join(dir, "global-attributes"));
 
   assert.equal(run(dir, "--staged").status, 1);
+  commit(dir);
+  assert.equal(run(dir).status, 1);
 });
 
 test("a file git treats as binary is skipped: a NUL in its first 8,000 bytes, or a binary or -diff mark", () => {
@@ -251,8 +257,9 @@ const sizeLines = (out) =>
     .filter((line) => /^size cap: \S+(?:: | is )/.test(line))
     .map((line) => line.replace(/ is [\d,]+ bytes.*/, " is over"));
 
-test("a listed file over the cap passes, even as the commit grows it", () => {
-  const dir = repo({ ".over-cap-list": "src/orders.ts\n", "src/orders.ts": text(40_000) }, { "src/orders.ts": text(41_000) });
+test("a listed file over the cap passes, as the commit grows it or marks it generated, the list's lines CRLF or not", () => {
+  const head = { ".over-cap-list": "src/orders.ts\r\nsrc/api.ts\n", "src/orders.ts": text(40_000), "src/api.ts": text(40_000) };
+  const dir = repo(head, { "src/orders.ts": text(41_000), ".gitattributes": "src/api.ts linguist-generated\n" });
 
   assert.equal(run(dir, "--staged").status, 0);
   const base = commit(dir);
@@ -291,6 +298,15 @@ test("a line the commit adds to the list is refused, a rename's new path include
   assert.equal(run(installing, "--base", commit(installing)).status, 0);
 });
 
+test("a list written again after a commit deleted it is compared with the last list, so it still only shrinks", () => {
+  const dir = repo({ ".over-cap-list": "src/a.ts\n", "src/a.ts": text(40_000) }, { ".over-cap-list": null });
+  commit(dir);
+  stage(dir, { ".over-cap-list": "src/a.ts\nsrc/b.ts\n", "src/b.ts": text(40_000) });
+
+  assert.deepEqual(sizeLines(run(dir, "--staged").out), [ADDED("src/b.ts")]);
+  assert.deepEqual(sizeLines(run(dir, "--base", commit(dir)).out), [ADDED("src/b.ts")]);
+});
+
 test("a line the commit removes while its file stays over the cap is refused, though the commit leaves the file alone", () => {
   const dir = repo({ ".over-cap-list": "src/a.ts\n", "src/a.ts": text(40_000) }, { ".over-cap-list": "" });
 
@@ -324,13 +340,14 @@ test("--write-list writes every judged file over the cap in the staged tree, sor
   assert.equal(run(dir, "--base", commit(dir)).status, 0);
 });
 
-test("a --base naming no commit here stops the run with exit 2, never a pass", () => {
+test("a call it cannot run stops with exit 2, never a pass", () => {
   const dir = repo({ ".over-cap-list": "" });
+  const stop = (out) => ({ status: 2, out: `size cap: ${out}\n` });
 
-  assert.deepEqual(run(dir, "--base", "0123456789abcdef0123456789abcdef01234567"), {
-    status: 2,
-    out: "size cap: --base 0123456789abcdef0123456789abcdef01234567 names no commit in this repo\n",
-  });
+  assert.deepEqual(run(dir, "--stagd"), stop("unknown option --stagd"));
+  assert.deepEqual(run(dir, "--base"), stop("--base needs a ref"));
+  assert.deepEqual(run(dir, "--staged", "--write-list"), stop("--staged, --base and --write-list each run alone"));
+  assert.deepEqual(run(dir, "--base", "0123456789abcdef0123456789abcdef01234567"), stop("--base 0123456789abcdef0123456789abcdef01234567 names no commit in this repo"));
 });
 
 test("a repo's first commit is judged like any other", () => {

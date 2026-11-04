@@ -1,9 +1,9 @@
 diff --git a/.github/workflows/size-cap.yml b/.github/workflows/size-cap.yml
 new file mode 100644
-index 0000000..5f4692a
+index 0000000..e916377
 --- /dev/null
 +++ b/.github/workflows/size-cap.yml
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,53 @@
 +name: Size cap
 +
 +# Fails the caller's CI when a hand-written file is over the Size cap and its Over-cap list does not
@@ -26,13 +26,12 @@ index 0000000..5f4692a
 +      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 +        with:
 +          path: repo
-+          # The whole history, so the base below is a commit the check can read, however far back
-+          # a pull request's base or a push's previous tip is.
++          # The whole history: the check reads the base's list, however far back a pull request's
++          # base or a push's previous tip is, and where the base holds none, the last its history held.
 +          fetch-depth: 0
 +          persist-credentials: false
 +
-+      # The check from the commit this workflow file was called at, whatever ref the caller
-+      # names, so the two never come from different commits.
++      # The check from the commit this workflow file was called at, as pointer-check.yml takes its checker.
 +      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 +        with:
 +          repository: filiptrivan/ci-workflows
