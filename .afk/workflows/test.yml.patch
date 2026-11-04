@@ -1,0 +1,35 @@
+diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
+index 85eac5c..d0f477f 100644
+--- a/.github/workflows/test.yml
++++ b/.github/workflows/test.yml
+@@ -2,6 +2,7 @@ name: Test
+ 
+ # The pointer check's own tests, and the rule the workflows here keep; the reusable workflows run in
+ # their callers, not here.
++# The Size cap's tests too, and the Size cap's own run over this repo (`size-cap`, below).
+ 
+ on:
+   push:
+@@ -23,6 +24,22 @@ jobs:
+           node-version: 22
+       - run: node --test pointer-check/pointer-check.test.mjs
+ 
++  size-cap-tests:
++    name: size cap tests
++    # ubuntu-slim, since the job is thin; workflow-policy/slim-jobs.test.mjs holds it to slim's limits.
++    runs-on: ubuntu-slim
++    timeout-minutes: 5
++    steps:
++      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
++      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
++        with:
++          node-version: 22
++      - run: node --test size-cap/size-cap.test.mjs
++
++  # Agents commit to this repo too, so the Size cap judges it as it judges its callers.
++  size-cap:
++    uses: ./.github/workflows/size-cap.yml
++
+   workflow-policy:
+     name: workflow policy tests
+     runs-on: ubuntu-latest
