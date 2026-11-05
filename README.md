@@ -235,12 +235,13 @@ Its tests: `node --test pointer-check/pointer-check.test.mjs`, run by `.github/w
 A job here moves to `ubuntu-slim` only within slim's limits: the header of
 `workflow-policy/slim-jobs.test.mjs`, run by `.github/workflows/test.yml`.
 
-## No `ubuntu-latest`, no unversioned npm package
+## No `ubuntu-latest`, no unversioned npm package, no Node version in a workflow
 
-No job runs on `ubuntu-latest`, and every package a job fetches from npm at run time
-(`npm install -g`, `npx -y`) names a version: the header of `workflow-policy/pins.test.mjs`, run by
-`.github/workflows/test.yml`. Another repo runs the checker over its own workflows from a checkout
-of this one:
+No job runs on `ubuntu-latest`, every package a job fetches from npm at run time
+(`npm install -g`, `npx -y`) names a version, and every `actions/setup-node` step reads its Node
+from the repo's root `.nvmrc` (`node-version-file`, a path ending in `.nvmrc`): the header of
+`workflow-policy/pins.test.mjs`, run by `.github/workflows/test.yml`. Another repo runs the checker
+over its own workflows from a checkout of this one:
 
 ```yaml
       - uses: actions/checkout@v6

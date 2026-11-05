@@ -1,11 +1,15 @@
-// Pins the rule that no job runs on `ubuntu-latest`, and that every package a job fetches from npm at
-// run time names a version. GitHub moves `ubuntu-latest` to a new Ubuntu on its own schedule
+// Pins the rule that no job runs on `ubuntu-latest`, that every package a job fetches from npm at
+// run time names a version, and that every setup-node step reads its Node from a `.nvmrc`. GitHub
+// moves `ubuntu-latest` to a new Ubuntu on its own schedule
 // ("between October 19 and November 19, 2026" for 26.04, its changelog of 2026-09-17, which advises
 // "pin your workflows to ubuntu-24.04"); on 2026-11-02 the move broke pa-storefront's Component Gate
 // (RS) ("Playwright does not support chromium-headless-shell on ubuntu26.04-x64"). An unversioned
 // `npm install -g verdaccio` took Verdaccio 7, which kept spiderly's CI red for five days until
 // spiderly 217f0752 (2026-11-02) named `verdaccio@6`. `npx -y` fetches a package just as
-// `npm install -g` does.
+// `npm install -g` does. The push program runs a repo's lanes under the Node its root `.nvmrc` names
+// (pacms-workspace#685 (Node lanes run under each repo's .nvmrc through fnm)), so a setup-node step
+// that writes its own Node is a second pin, which drifts: pa-cms's admin ran on Node 20 in CI and on
+// 22 on the Agent box until pacms-workspace#852 (pa-cms runs on one Node, 22, which its .nvmrc names).
 //
 // Two halves: the checker fails on what it exists to catch, then it runs over the workflows here.
 //
@@ -131,6 +135,49 @@ test("a runs-on written after the job's steps is caught too", () => {
   assert.deepEqual(pinProblems([{ name: "test.yml", text }]), ["test.yml: job `unit` runs on ubuntu-latest (line 11); name a version, ubuntu-24.04"]);
 });
 
+/** pa-cms's Admin Karma step as it stood before pa-cms's `.nvmrc`, one Node in CI and another on the box. */
+const WRITES_NODE = `
+jobs:
+  karma:
+    name: Admin Karma
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+`;
+
+test("a setup-node step that writes its Node version is caught, naming its workflow, job and line", () => {
+  assert.deepEqual(pinProblems([{ name: "admin-karma.yml", text: WRITES_NODE }]), [
+    "admin-karma.yml: job `karma` writes its Node version in setup-node (line 11); read the Node from .nvmrc, node-version-file: .nvmrc",
+  ]);
+});
+
+const NO_NVMRC = "runs setup-node with no .nvmrc to read";
+
+for (const [form, setUp, problem] of [
+  ["a node-version-file that is not .nvmrc", "- uses: actions/setup-node@v4\n        with:\n          node-version-file: package.json", `${NO_NVMRC} (line 8)`],
+  ["no node-version-file at all", "- name: Set up Node\n        uses: actions/setup-node@v4\n        with:\n          cache: npm", `${NO_NVMRC} (line 7)`],
+  ["no with: at all", "- uses: actions/setup-node@v4", `${NO_NVMRC} (line 6)`],
+  ["node-version beside node-version-file, which setup-node takes over the file", "- uses: actions/setup-node@v4\n        with:\n          node-version-file: .nvmrc\n          node-version: 22", "writes its Node version in setup-node (line 9)"],
+  ["a matrix's node-version", "- uses: actions/setup-node@v4\n        with:\n          node-version: ${{ matrix.node }}", "writes its Node version in setup-node (line 8)"],
+]) {
+  test(`a setup-node step is caught with ${form}`, () => {
+    const text = `\njobs:\n  test:\n    runs-on: ubuntu-24.04\n    steps:\n      ${setUp}\n      - run: npm test\n`;
+    assert.deepEqual(pinProblems([{ name: "test.yml", text }]), [`test.yml: job \`test\` ${problem}; read the Node from .nvmrc, node-version-file: .nvmrc`]);
+  });
+}
+
+test("a setup-node step written at its steps: key's own indent is read too", () => {
+  const text = WRITES_NODE.replace(/^ {6}/gm, "    ");
+  assert.deepEqual(pinProblems([{ name: "admin-karma.yml", text }]), [
+    "admin-karma.yml: job `karma` writes its Node version in setup-node (line 11); read the Node from .nvmrc, node-version-file: .nvmrc",
+  ]);
+});
+
 test("slim, versioned images, versioned packages, local binaries and comments pass, as the seven repos write them", () => {
   const text = `
 jobs:
@@ -159,6 +206,35 @@ jobs:
         run: |
           echo "ubuntu-latest moved to 26.04"
     timeout-minutes: 5
+  node:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          # not node-version: 22
+          node-version-file: checker/.nvmrc
+      - uses: "actions/setup-node@v4"
+        with:
+          node-version-file: "pa-storefront/.nvmrc"
+          cache: pnpm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          cat > .tool-versions <<'TOOLS'
+          node-version: 20
+          TOOLS
+  flush:
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version-file: .nvmrc
+    - run: node --test
 `;
   assert.deepEqual(pinProblems([{ name: "ok.yml", text }]), []);
 });
@@ -181,7 +257,7 @@ test("the command reads a tree's workflows with their pending patch applied, fai
     git("init", "-q", "-b", "main");
     git("add", "-A");
     git("-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "the workflow");
-    assert.deepEqual(runPins("--root", repo), { status: 0, output: "pins: no job runs on ubuntu-latest or fetches an npm package with no version (1 workflow)\n" });
+    assert.deepEqual(runPins("--root", repo), { status: 0, output: "pins: no job runs on ubuntu-latest, fetches an npm package with no version or sets up Node from anything but .nvmrc (1 workflow)\n" });
 
     writeFileSync(workflow, LATEST);
     mkdirSync(join(repo, ".afk/workflows"), { recursive: true });

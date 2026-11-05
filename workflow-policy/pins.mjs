@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// The rule that no job runs on `ubuntu-latest` and every package a job fetches from npm at run time
-// names a version, read as `workflows.mjs` reads a workflow. Why the rule: `pins.test.mjs`'s header.
+// The rule that no job runs on `ubuntu-latest`, every package a job fetches from npm at run time
+// names a version, and every setup-node step reads its Node from a `.nvmrc`, read as `workflows.mjs`
+// reads a workflow. Why the rule: `pins.test.mjs`'s header.
 // Another repo's step runs it over its own workflows, their pending `.afk/workflows/` patches
 // applied, and fails on any problem:
 //
@@ -114,13 +115,53 @@ function outsideSteps(job) {
   });
 }
 
+/**
+ * The job's steps, each the lines from its `-` to the next step's, a step written at its `steps:`
+ * key's own indent included.
+ */
+function stepsOf(job) {
+  const body = job.lines.filter((line) => line.code.trim());
+  const keyIndent = body.length ? indentOf(body[0].code) : 0;
+  const steps = [];
+  let inSteps = false;
+  let dash = null;
+  for (const line of body) {
+    const depth = indentOf(line.code);
+    const item = /^\s*-(\s|$)/.test(line.code);
+    if (depth === keyIndent && !item) inSteps = /^\s*steps:/.test(line.code);
+    else if (inSteps) {
+      if (item && depth === (dash ??= depth)) steps.push([]);
+      steps.at(-1)?.push(line);
+    }
+  }
+  return steps;
+}
+
+const SETUP_NODE = /^\s*(-\s+)?uses:\s*["']?actions\/setup-node@/;
+
+/**
+ * How a setup-node step sets up a Node other than the one a `.nvmrc` names, naming the line, or null
+ * when it reads a `.nvmrc`: a `node-version`, which setup-node takes over a `node-version-file` (its
+ * docs/advanced-usage.md), else a `node-version-file` naming another file, or none.
+ */
+function nodeProblem(step) {
+  const key = (name) => step.find((line) => new RegExp(`^\\s*${name}:`).test(line.code));
+  const version = key("node-version");
+  if (version) return `writes its Node version in setup-node (line ${version.number})`;
+  const file = key("node-version-file");
+  const path = file?.code.replace(/^[^:]*:\s*/, "").trim().replace(/^(["'])(.*)\1$/, "$2");
+  if (/(^|\/)\.nvmrc$/.test(path ?? "")) return null;
+  return `runs setup-node with no .nvmrc to read (line ${(file ?? step.find((line) => SETUP_NODE.test(line.code))).number})`;
+}
+
 /** How a problem with `spec`, read on line `number`, is mended. */
 const nameOne = (spec, number) => `with no version (line ${number}); name one, ${spec.replace(/@latest$/, "")}@<version>`;
 
 /**
  * What breaks the pin rule in `workflows` (`{ name, text }` each), one line per problem naming the
  * workflow, the job and the line: a job that names `ubuntu-latest` outside a comment and its steps,
- * its matrix included, and each package a job fetches from npm at run time with no version.
+ * its matrix included, each package a job fetches from npm at run time with no version, and each
+ * setup-node step that reads its Node from no `.nvmrc`.
  */
 export function pinProblems(workflows) {
   const problems = [];
@@ -132,6 +173,10 @@ export function pinProblems(workflows) {
       for (const { number, code } of commandLines(job)) {
         for (const spec of globalInstalls(code).filter(unversioned)) problems.push(`${where} installs ${spec} globally ${nameOne(spec, number)}`);
         for (const spec of npxFetches(code).filter(unversioned)) problems.push(`${where} runs ${spec} through npx -y ${nameOne(spec, number)}`);
+      }
+      for (const step of stepsOf(job).filter((step) => step.some((line) => SETUP_NODE.test(line.code)))) {
+        const problem = nodeProblem(step);
+        if (problem) problems.push(`${where} ${problem}; read the Node from .nvmrc, node-version-file: .nvmrc`);
       }
     }
   }
@@ -167,7 +212,7 @@ function main(argv) {
   console.log(
     problems.length
       ? `pins: ${plural(problems.length, "problem")}`
-      : `pins: no job runs on ubuntu-latest or fetches an npm package with no version (${plural(workflows.length, "workflow")})`,
+      : `pins: no job runs on ubuntu-latest, fetches an npm package with no version or sets up Node from anything but .nvmrc (${plural(workflows.length, "workflow")})`,
   );
   return problems.length ? 1 : 0;
 }
