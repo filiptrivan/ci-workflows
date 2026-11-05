@@ -164,6 +164,9 @@ for (const [form, setUp, problem] of [
   ["no with: at all", "- uses: actions/setup-node@v4", `${NO_NVMRC} (line 6)`],
   ["node-version beside node-version-file, which setup-node takes over the file", "- uses: actions/setup-node@v4\n        with:\n          node-version-file: .nvmrc\n          node-version: 22", "writes its Node version in setup-node (line 9)"],
   ["a matrix's node-version", "- uses: actions/setup-node@v4\n        with:\n          node-version: ${{ matrix.node }}", "writes its Node version in setup-node (line 8)"],
+  ["a quoted node-version key", "- uses: actions/setup-node@v4\n        with:\n          node-version-file: .nvmrc\n          \"node-version\": 20", "writes its Node version in setup-node (line 9)"],
+  ["a quoted uses key", "- 'uses': actions/setup-node@v4\n        with:\n          node-version: 20", "writes its Node version in setup-node (line 8)"],
+  ["the action named in another case, which GitHub resolves the same", "- uses: Actions/Setup-Node@v4\n        with:\n          node-version: 20", "writes its Node version in setup-node (line 8)"],
 ]) {
   test(`a setup-node step is caught with ${form}`, () => {
     const text = `\njobs:\n  test:\n    runs-on: ubuntu-24.04\n    steps:\n      ${setUp}\n      - run: npm test\n`;
@@ -171,8 +174,8 @@ for (const [form, setUp, problem] of [
   });
 }
 
-test("a setup-node step written at its steps: key's own indent is read too", () => {
-  const text = WRITES_NODE.replace(/^ {6}/gm, "    ");
+test("steps written at their steps: key's own indent are read as steps: a setup-node one is caught, a run line naming ubuntu-latest is not", () => {
+  const text = `${WRITES_NODE.replace(/^ {6}/gm, "    ")}    - run: echo "ubuntu-latest moved to 26.04"\n`;
   assert.deepEqual(pinProblems([{ name: "admin-karma.yml", text }]), [
     "admin-karma.yml: job `karma` writes its Node version in setup-node (line 11); read the Node from .nvmrc, node-version-file: .nvmrc",
   ]);
@@ -217,9 +220,12 @@ jobs:
         with:
           # not node-version: 22
           node-version-file: checker/.nvmrc
-      - uses: "actions/setup-node@v4"
+      - uses: actions/setup-node@v4
         with:
-          node-version-file: "pa-storefront/.nvmrc"
+          node-version-file: pa-storefront/.nvmrc
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
           cache: pnpm
       - uses: actions/setup-python@v5
         with:
@@ -228,13 +234,6 @@ jobs:
           cat > .tool-versions <<'TOOLS'
           node-version: 20
           TOOLS
-  flush:
-    runs-on: ubuntu-24.04
-    steps:
-    - uses: actions/setup-node@v4
-      with:
-        node-version-file: .nvmrc
-    - run: node --test
 `;
   assert.deepEqual(pinProblems([{ name: "ok.yml", text }]), []);
 });
