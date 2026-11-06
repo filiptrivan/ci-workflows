@@ -265,3 +265,20 @@ there, and by the `size-cap` job of `.github/workflows/test.yml`, which also run
 
 A job here moves to `ubuntu-slim` only within slim's limits: the header of
 `workflow-policy/slim-jobs.test.mjs`, run by `.github/workflows/test.yml`.
+
+## No `ubuntu-latest`, no unversioned npm package
+
+No job runs on `ubuntu-latest`, and every package a job fetches from npm at run time
+(`npm install -g`, `npx -y`) names a version: the header of `workflow-policy/pins.test.mjs`, run by
+`.github/workflows/test.yml`. Another repo runs the checker over its own workflows from a checkout
+of this one:
+
+```yaml
+      - uses: actions/checkout@v6
+        with:
+          repository: filiptrivan/ci-workflows
+          ref: main
+          path: ci-workflows
+          persist-credentials: false
+      - run: node ci-workflows/workflow-policy/pins.mjs --root .
+```

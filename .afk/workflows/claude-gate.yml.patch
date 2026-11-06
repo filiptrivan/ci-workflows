@@ -1,0 +1,13 @@
+diff --git a/.github/workflows/claude-gate.yml b/.github/workflows/claude-gate.yml
+index eb7db52..be6fa77 100644
+--- a/.github/workflows/claude-gate.yml
++++ b/.github/workflows/claude-gate.yml
+@@ -64,7 +64,7 @@ jobs:
+       github.event.pull_request.draft == false &&
+       (inputs.same_repo_only == false ||
+        github.event.pull_request.head.repo.full_name == github.repository)
+-    runs-on: ubuntu-latest
++    runs-on: ubuntu-24.04
+     timeout-minutes: 30
+     steps:
+       - name: Checkout repository
