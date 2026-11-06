@@ -698,8 +698,8 @@ function maskSpans(text) {
 // What follows a file pointer to make it a heading pointer.
 const HEADING_AFTER = /^\s*(→|->)\s*"([^"]+)"/;
 // The same with a word in place of the quoted text, emphasis or a quote mark that is not `"` ahead
-// of it: `GLOSSARY.md` → Ready frontier, `GLOSSARY.md` → **Pool**.
-const UNQUOTED_HEADING_AFTER = /^\s*(→|->)\s*([*_“”„‘'«]*\p{L}.*)/u;
+// of it: `GLOSSARY.md` → Ready frontier, `GLOSSARY.md` → **Pool**, `zone-move.md` → 4A.
+const UNQUOTED_HEADING_AFTER = /^\s*(→|->)\s*[*_“”„‘'«]*([\p{L}\p{N}].*)/u;
 // A comment line's decoration (` * `, `// `, `# `), which is not text of the prose it carries.
 const DECORATION = /^[\s*#/]*/;
 
@@ -860,15 +860,14 @@ function headingPointer(filePointer, arrow, text, { repo, file }) {
 }
 
 // A heading named without quotes fails wherever its file is, a sibling's that is not checked out
-// too: reading where its text ends ("→ Ready frontier): first") would fail pointers written right.
-// The text the message quotes is cut at the first mark that ends a heading in prose, a hint for its
-// writer, never resolved.
+// too, and lands on nothing: where its text ends ("→ Ready frontier): first") is a guess, and a wrong
+// guess would fail a pointer whose heading exists. The text the message quotes is cut at the first
+// mark that ends a heading in prose, a hint for its writer, never resolved.
 const UNQUOTED_HEADING_END = /[()[\]{},;:!?"“”„«»*_`|<>→—–]|\.(?=\s+[^a-z]|\s*$)|\s-+>?\s/;
 
 function unquotedHeadingPointer(span, arrow, rest) {
-  const text = rest.replace(/^[*_“”„‘'«]+/, "").split(UNQUOTED_HEADING_END)[0].replace(/\s+/g, " ").trim();
+  const text = rest.split(UNQUOTED_HEADING_END)[0].replace(/\s+/g, " ").trim();
   return {
-    display: `${span} ${arrow} ${text}`,
     refusal: `${span} ${arrow} ${text} names a heading without quotes: write ${span} ${arrow} "${text}"`,
     resolve: () => 0,
   };
@@ -1139,7 +1138,8 @@ function dropIgnored(failures) {
 
 // The path itself and each directory above it, stopping at the first symlinked directory, which is
 // asked about as itself, without the slash git refuses: an Agent box worktree's `node_modules` is a
-// symlink to the main checkout's, ignored as `/Frontend/node_modules`.
+// symlink to the main checkout's, which the box ignores in `.git/info/exclude` as
+// `/Frontend/node_modules`, since the tracked `**/node_modules/` matches only a directory.
 function ignoreCandidates(root, path) {
   const segments = path.replace(/\/+$/, "").split("/");
   const candidates = [];

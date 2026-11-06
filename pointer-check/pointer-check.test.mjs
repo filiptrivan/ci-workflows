@@ -586,7 +586,8 @@ test("a heading named without quotes fails, after either arrow, its message givi
     "GLOSSARY.md": "# Terms\n\n**Ready frontier**: the tickets.\n\n**Pool**: the accounts.\n",
     "docs/live.md":
       'Fine: `CLAUDE.md` → "Repo info". Branches: `CLAUDE.md` → Repo info, tags: `CLAUDE.md` -> Repo info.\n' +
-      "Ready ones (`GLOSSARY.md` → Ready frontier): first. The accounts: `GLOSSARY.md` → **Pool**.\n",
+      "Ready ones (`GLOSSARY.md` → Ready frontier): first. The accounts: `GLOSSARY.md` → **Pool**.\n" +
+      "Ships from `GLOSSARY.md` → V.V. warehouse. Then `CLAUDE.md` → Repo info - the rest, `CLAUDE.md` → 4A, step 1.\n",
     "src/a.ts": "// Branches: `CLAUDE.md` ->\n// Repo info, wrapped.\nexport const a = 1;\n",
   });
   const result = check(dir);
@@ -595,6 +596,9 @@ test("a heading named without quotes fails, after either arrow, its message givi
     'docs/live.md:1: `CLAUDE.md` -> Repo info names a heading without quotes: write `CLAUDE.md` -> "Repo info"',
     'docs/live.md:2: `GLOSSARY.md` → Ready frontier names a heading without quotes: write `GLOSSARY.md` → "Ready frontier"',
     'docs/live.md:2: `GLOSSARY.md` → Pool names a heading without quotes: write `GLOSSARY.md` → "Pool"',
+    'docs/live.md:3: `GLOSSARY.md` → V.V. warehouse names a heading without quotes: write `GLOSSARY.md` → "V.V. warehouse"',
+    'docs/live.md:3: `CLAUDE.md` → Repo info names a heading without quotes: write `CLAUDE.md` → "Repo info"',
+    'docs/live.md:3: `CLAUDE.md` → 4A names a heading without quotes: write `CLAUDE.md` → "4A"',
     'src/a.ts:1: `CLAUDE.md` -> Repo info names a heading without quotes: write `CLAUDE.md` -> "Repo info"',
   ]);
   assert.equal(result.status, 1);
