@@ -429,6 +429,19 @@ test("an ignored path through a symlinked directory is skipped and does not sink
   assert.deepEqual(check(dir).lines, ["docs/live.md:2: `docs/gone.md` resolves to nothing"]);
 });
 
+test("a path into an ignored directory that is itself a symlink, as a worktree's node_modules is, is skipped", () => {
+  const outside = mkdtempSync(join(tmpdir(), "pointer-check-modules-"));
+  mkdirSync(join(outside, "spiderly/docs"), { recursive: true });
+  writeFileSync(join(outside, "spiderly/docs/index.md"), "# Docs\n");
+  const dir = repo({
+    ".gitignore": "/Frontend/node_modules\n",
+    "Frontend/app.ts": "export const app = 1;\n",
+    "docs/live.md": "Spiderly's docs: `Frontend/node_modules/spiderly/docs/index.md`; `Frontend/gone.ts` is gone.\n",
+  });
+  symlinkSync(outside, join(dir, "Frontend/node_modules"));
+  assert.deepEqual(check(dir).lines, ["docs/live.md:1: `Frontend/gone.ts` resolves to nothing"]);
+});
+
 test("a sibling prefix at the end of the previous line still prefixes the pointer that opens the next", () => {
   const dir = repo({
     ".pointer-check.jsonc": JSON.stringify({ siblings: { "pa-cms": ["../pa-cms"] } }),
@@ -565,6 +578,46 @@ test("a heading pointer takes the ASCII arrow too, in a comment as in Markdown",
     "src/a.ts": '// Branches: `CLAUDE.md` -> "Repo info"; tags: `CLAUDE.md` -> "Release tags".\nexport const a = 1;\n',
   });
   assert.deepEqual(check(dir).lines, ['src/a.ts:1: `CLAUDE.md` -> "Release tags" resolves to nothing']);
+});
+
+test("a heading named without quotes fails, after either arrow, its message giving the quoted form", () => {
+  const dir = repo({
+    "CLAUDE.md": "# Rules\n\n## Repo info\n",
+    "GLOSSARY.md": "# Terms\n\n**Ready frontier**: the tickets.\n\n**Pool**: the accounts.\n",
+    "docs/live.md":
+      'Fine: `CLAUDE.md` → "Repo info". Branches: `CLAUDE.md` → Repo info, tags: `CLAUDE.md` -> Repo info.\n' +
+      "Ready ones (`GLOSSARY.md` → Ready frontier): first. The accounts: `GLOSSARY.md` → **Pool**.\n",
+    "src/a.ts": "// Branches: `CLAUDE.md` ->\n// Repo info, wrapped.\nexport const a = 1;\n",
+  });
+  const result = check(dir);
+  assert.deepEqual(result.lines, [
+    'docs/live.md:1: `CLAUDE.md` → Repo info names a heading without quotes: write `CLAUDE.md` → "Repo info"',
+    'docs/live.md:1: `CLAUDE.md` -> Repo info names a heading without quotes: write `CLAUDE.md` -> "Repo info"',
+    'docs/live.md:2: `GLOSSARY.md` → Ready frontier names a heading without quotes: write `GLOSSARY.md` → "Ready frontier"',
+    'docs/live.md:2: `GLOSSARY.md` → Pool names a heading without quotes: write `GLOSSARY.md` → "Pool"',
+    'src/a.ts:1: `CLAUDE.md` -> Repo info names a heading without quotes: write `CLAUDE.md` -> "Repo info"',
+  ]);
+  assert.equal(result.status, 1);
+});
+
+test("an unquoted heading fails even where its file is a sibling's that is not checked out", () => {
+  const dir = repo({
+    ".pointer-check.jsonc": JSON.stringify({ siblings: { "pa-cms": ["../pa-cms"] } }),
+    "docs/live.md": "Entities: pa-cms `CLAUDE.md` → Entity changes; `pa-cms/CLAUDE.md` → \"Gone\" is skipped.\n",
+  });
+  assert.deepEqual(check(dir).lines, [
+    'docs/live.md:1: `CLAUDE.md` → Entity changes names a heading without quotes: write `CLAUDE.md` → "Entity changes"',
+  ]);
+});
+
+test("an arrow after a Markdown file is a heading pointer only when a word follows it", () => {
+  const dir = repo({
+    "docs/old.md": "# Old\n",
+    "docs/new.md": "# New\n",
+    "src/build.ts": "export const build = 1;\n",
+    "docs/live.md": "Moved: `docs/old.md` → `docs/new.md`. The bundle: `src/build.ts` → writes `dist/`.\n",
+  });
+  assert.deepEqual(check(dir).lines, []);
 });
 
 test("a heading pointer into a sibling repo is checked there, and skipped when the sibling is absent", () => {

@@ -22,7 +22,10 @@
 //   a heading         a backticked file path, an arrow (→ or ->) and a quoted text, as in
 //                     `CLAUDE.md` → "Repo info"; resolves when the Markdown file it lands on holds
 //                     exactly one heading, table row's first cell or bold run opening a line with
-//                     that text (how they are matched and ranked: headingPointer)
+//                     that text (how they are matched and ranked: headingPointer). A Markdown file
+//                     path, an arrow and a word without quotes fails whatever it names: where an
+//                     unquoted text ends is a guess, so its heading would go unchecked
+//                     (unquotedHeadingPointer)
 //   any of the above prefixed with a sibling repo's name (`pa-cms/Backend/X.cs`, pa-cms `X.Y`,
 //                     pa-cms ADR 0009); checked in that sibling when it is checked out beside
 //                     this one, skipped when it is not, so a lone clone's CI never fails on it;
@@ -675,12 +678,16 @@ function markdownLines(text) {
 const SPAN = /(`+)(?!`)([\s\S]*?[^`])\1(?!`)/g;
 // What follows a file pointer to make it a heading pointer.
 const HEADING_AFTER = /^\s*(→|->)\s*"([^"]+)"/;
+// The same with a word in place of the quoted text, emphasis or a quote mark that is not `"` ahead
+// of it: `GLOSSARY.md` → Ready frontier, `GLOSSARY.md` → **Pool**.
+const UNQUOTED_HEADING_AFTER = /^\s*(→|->)\s*([*_“”„‘'«]*\p{L}.*)/u;
 // A comment line's decoration (` * `, `// `, `# `), which is not text of the prose it carries.
 const DECORATION = /^[\s*#/]*/;
 
 // Every pointer in one line of prose, as { column, display, resolve } where resolve() returns how
 // many targets the pointer lands on, or undefined when it cannot be checked here; a path pointer
-// also carries located(), the checkout and path it names, and a heading pointer `heading: true`.
+// also carries located(), the checkout and path it names, a heading pointer `heading: true`, and an
+// unquoted heading `refusal`, its message.
 // `previous` and `next` are the prose lines around this one: wrapped prose leaves a repo's name at
 // the end of one line and its pointer at the start of the next, or a heading pointer's arrow or
 // quoted text on the next.
@@ -699,9 +706,13 @@ function pointersIn(text, { repo, file, kind, previous = "", next = "" }) {
     const pointer = classify(content, { repo, file, prefix, bareSymbols: afterSee });
     if (pointer) {
       pointers.push({ column: match.index, ...pointer });
-      const quoted = HEADING_AFTER.exec(wrapped.slice(match.index + match[0].length));
+      const after = wrapped.slice(match.index + match[0].length);
+      const quoted = HEADING_AFTER.exec(after);
+      const unquoted = UNQUOTED_HEADING_AFTER.exec(after);
       if (quoted && pointer.located) {
         pointers.push({ column: match.index, ...headingPointer(pointer, quoted[1], quoted[2], { repo, file }) });
+      } else if (unquoted && pointer.located && MARKDOWN_EXTENSIONS.has(extensionOf(pointer.display))) {
+        pointers.push({ column: match.index, ...unquotedHeadingPointer(match[0], unquoted[1], unquoted[2]) });
       }
     } else if (/^ADRs? ?-?\d{4}$/.test(content)) {
       const number = content.match(/\d{4}/)[0];
@@ -826,6 +837,21 @@ function headingPointer(filePointer, arrow, text, { repo, file }) {
       const best = Math.min(...ranks);
       return ranks.filter((rank) => rank === best).length;
     },
+  };
+}
+
+// A heading named without quotes fails wherever its file is, a sibling's that is not checked out
+// too: reading where its text ends ("→ Ready frontier): first") would fail pointers written right.
+// The text the message quotes is cut at the first mark that ends a heading in prose, a hint for its
+// writer, never resolved.
+const UNQUOTED_HEADING_END = /[()[\]{},;:!?"“”„«»*_`|<>→—–]|\.(?=\s+[^a-z]|\s*$)|\s-+>?\s/;
+
+function unquotedHeadingPointer(span, arrow, rest) {
+  const text = rest.replace(/^[*_“”„‘'«]+/, "").split(UNQUOTED_HEADING_END)[0].replace(/\s+/g, " ").trim();
+  return {
+    display: `${span} ${arrow} ${text}`,
+    refusal: `${span} ${arrow} ${text} names a heading without quotes: write ${span} ${arrow} "${text}"`,
+    resolve: () => 0,
   };
 }
 
@@ -1007,7 +1033,9 @@ function check(root, { only = [], siblingsBeside } = {}) {
           line,
           column: pointer.column,
           ignorable: targets === 0 ? pointer.located?.() : undefined,
-          message: `${pointer.heading ? pointer.display : `\`${pointer.display}\``} ${targets === 0 ? "resolves to nothing" : `resolves to ${targets} targets`}`,
+          message:
+            pointer.refusal ??
+            `${pointer.heading ? pointer.display : `\`${pointer.display}\``} ${targets === 0 ? "resolves to nothing" : `resolves to ${targets} targets`}`,
         });
       }
     }
@@ -1023,7 +1051,7 @@ function check(root, { only = [], siblingsBeside } = {}) {
 //
 // git refuses a path that runs through a symlink ("beyond a symbolic link", pnpm's node_modules)
 // and fails the whole batch with it, so each path is asked about only up to its first symlinked
-// directory: an ignored directory before that point covers everything under it.
+// directory: an ignored directory up to that point covers everything under it.
 function dropIgnored(failures) {
   const asked = new Map();
   for (const failure of failures) {
@@ -1049,14 +1077,16 @@ function dropIgnored(failures) {
   }
 }
 
-// The path itself and each directory above it, stopping before the first symlinked directory.
+// The path itself and each directory above it, stopping at the first symlinked directory, which is
+// asked about as itself, without the slash git refuses: an Agent box worktree's `node_modules` is a
+// symlink to the main checkout's, ignored as `/Frontend/node_modules`.
 function ignoreCandidates(root, path) {
   const segments = path.replace(/\/+$/, "").split("/");
   const candidates = [];
   for (let i = 1; i < segments.length; i++) {
     const dir = segments.slice(0, i).join("/");
     try {
-      if (lstatSync(join(root, dir)).isSymbolicLink()) return candidates;
+      if (lstatSync(join(root, dir)).isSymbolicLink()) return [...candidates, dir];
     } catch {
       break;
     }
