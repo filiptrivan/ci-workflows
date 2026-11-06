@@ -1,0 +1,10 @@
+#!/bin/sh
+# Activate once per clone: scripts/setup-hooks.sh
+set -e
+
+# The Size cap on the files this commit adds or modifies, run from this checkout's own copy of the
+# check; CI judges the whole tree behind it (size-cap/size-cap.mjs).
+if ! out=$(node "$(git rev-parse --show-toplevel)/size-cap/size-cap.mjs" --staged 2>&1); then
+  printf '%s\n' "$out"
+  exit 1
+fi
