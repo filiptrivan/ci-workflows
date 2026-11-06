@@ -37,11 +37,19 @@
 // files the index adds or changes, read from the hook's index before the run drops the git
 // variables a hook hands it: every git call after runs as by hand, each sibling's in its own repo.
 //
+// The history lint, in a repo whose settings name its teammates, also fails a resident file (every
+// `CLAUDE.md` and `AGENTS.md`, and `.claude/rules/*.md`) that holds, outside code, an issue number
+// (`#123`, `repo#123`) or a who-and-when note (a teammate's name up to three words before a date,
+// `(Filip, 2026-10-27`).
+// A resident file loads into every session under it, so it holds a rule and its reason; who said it,
+// when and the issue go in the commit message or an ADR. A dated fact and an ADR number pass.
+//
 // Per-repo settings live in `.pointer-check.jsonc` at the root (JSON with comments):
 //   {
 //     "exempt": ["path/prefix/", "glob/**/*.md", "!re/included.md"],  // last match wins
 //     "siblings": { "name": ["../name", "name"] },  // present when a path holds a `.git`
-//     "self": ["name"]                               // this repo's own names, as a prefix
+//     "self": ["name"],                              // this repo's own names, as a prefix
+//     "historyLint": { "teammates": ["Name"] }      // absent: no history lint
 //   }
 
 import { execFileSync, spawnSync } from "node:child_process";
@@ -234,7 +242,12 @@ class Repo {
     const path = join(root, ".pointer-check.jsonc");
     if (!existsSync(path)) return { exempt: [], siblings: {}, self: [] };
     const config = parseJsonc(readFileSync(path, "utf8"));
-    return { exempt: config.exempt ?? [], siblings: config.siblings ?? {}, self: config.self ?? [] };
+    return {
+      exempt: config.exempt ?? [],
+      siblings: config.siblings ?? {},
+      self: config.self ?? [],
+      historyLint: config.historyLint,
+    };
   }
 
   // Tracked plus untracked-and-unignored, so a file written this session can be pointed at before
@@ -676,6 +689,12 @@ function markdownLines(text) {
 }
 
 const SPAN = /(`+)(?!`)([\s\S]*?[^`])\1(?!`)/g;
+
+// The text with each code span blanked to spaces, so columns still line up.
+function maskSpans(text) {
+  return text.replace(SPAN, (span) => " ".repeat(span.length));
+}
+
 // What follows a file pointer to make it a heading pointer.
 const HEADING_AFTER = /^\s*(→|->)\s*"([^"]+)"/;
 // The same with a word in place of the quoted text, emphasis or a quote mark that is not `"` ahead
@@ -693,7 +712,7 @@ const DECORATION = /^[\s*#/]*/;
 // quoted text on the next.
 function pointersIn(text, { repo, file, kind, previous = "", next = "" }) {
   const pointers = [];
-  const masked = text.replace(SPAN, (span) => " ".repeat(span.length));
+  const masked = maskSpans(text);
   const siblingPrefix = siblingPrefixPattern(repo);
   // Markdown has no decoration: a wrapped line may open with text's own `/` or `#`.
   const wrapped = `${text} ${kind === "comment" ? next.replace(DECORATION, "") : next}`;
@@ -994,6 +1013,44 @@ function relativePointer(path, { repo, file }) {
   };
 }
 
+// The files and notes the history lint judges (the header).
+const RESIDENT = /(?:^|\/)(?:CLAUDE|AGENTS)\.md$|(?:^|\/)\.claude\/rules\/.+\.md$/;
+// `#123`, `repo#123` or `owner/repo#123`, never inside a word, an HTML entity (`&#38;`) or a URL.
+const ISSUE_NUMBER = /(?<![\w&#/.-])(?:[A-Za-z][\w.-]*(?:\/[A-Za-z0-9][\w.-]*)?)?#\d+(?![\w-])/g;
+// A Markdown link's target, blanked so a heading anchor (`GLOSSARY.md#1-term`) is no issue number.
+const LINK_TARGET = /\]\([^)]*\)/g;
+const HISTORY_REASON = "a resident file holds a rule and its reason, its history goes in the commit message or an ADR";
+
+// The history notes in one line of a resident file, `next` the line after it: a who-and-when note
+// is a teammate's name, at most three words, then a date ("(Filip, 2026-10-27", "Mira 2026-10-30",
+// "Filip's ask, 2026-10-25"), and wraps onto the next line as often as not. With no teammates
+// named, only issue numbers are notes.
+function historyNotes(teammates = []) {
+  const names = teammates.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  const kinds = [{ pattern: ISSUE_NUMBER, kind: "an issue number" }];
+  if (names) {
+    const letter = "[\\p{L}\\p{N}_]";
+    const pattern = new RegExp(
+      `(?<!${letter})(?:${names})(?:['’]s)?(?!${letter})(?:[\\s,(]+\\p{L}+){0,3}?[\\s,(]+\\d{4}-\\d{2}-\\d{2}(?!\\d)`,
+      "gu",
+    );
+    kinds.push({ pattern, kind: "a who-and-when note" });
+  }
+  return (text, next) => {
+    const masked = maskSpans(`${text}\n${next}`).replace(LINK_TARGET, (target) => " ".repeat(target.length));
+    // A note that opens on the next line is the next line's own.
+    return kinds.flatMap(({ pattern, kind }) =>
+      [...masked.matchAll(pattern)]
+        .filter((match) => match.index < text.length)
+        .map((match) => ({
+          column: match.index,
+          history: true,
+          message: `\`${match[0].replace(/\s+/g, " ")}\` is ${kind}: ${HISTORY_REASON}`,
+        })),
+    );
+  };
+}
+
 function prose(repo, file) {
   const extension = extensionOf(file);
   const text = readText(join(repo.root, file));
@@ -1011,6 +1068,7 @@ function check(root, { only = [], siblingsBeside } = {}) {
   const selected = (file) =>
     only.length === 0 || only.some((path) => file === path || file.startsWith(path.endsWith("/") ? path : `${path}/`));
   const failures = [];
+  const notesIn = repo.config.historyLint ? historyNotes(repo.config.historyLint.teammates) : undefined;
   let pointerCount = 0;
   let fileCount = 0;
   for (const file of repo.scanned) {
@@ -1018,9 +1076,11 @@ function check(root, { only = [], siblingsBeside } = {}) {
     const lines = prose(repo, file);
     if (lines.length === 0) continue;
     fileCount++;
+    const resident = notesIn && RESIDENT.test(file);
     let previous = "";
     for (const [index, { line, text, kind }] of lines.entries()) {
       const next = lines[index + 1]?.line === line + 1 ? lines[index + 1].text : "";
+      if (resident) for (const note of notesIn(text, next)) failures.push({ file, line, ...note });
       const found = pointersIn(text, { repo, file, kind, previous, next });
       previous = text;
       for (const pointer of found) {
@@ -1042,7 +1102,7 @@ function check(root, { only = [], siblingsBeside } = {}) {
   }
   dropIgnored(failures);
   failures.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : a.line - b.line || a.column - b.column));
-  return { failures, pointerCount, fileCount };
+  return { failures, pointerCount, fileCount, historyLint: Boolean(repo.config.historyLint) };
 }
 
 // A path the repo's ignore rules match names a file that is untracked on purpose (a local secrets
@@ -1129,15 +1189,20 @@ function main(argv) {
   }
   for (const name of HOOK_GIT_VARIABLES) delete process.env[name];
   root = resolve(root ?? execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim());
-  const { failures, pointerCount, fileCount } = check(root, { only, siblingsBeside });
+  const { failures, pointerCount, fileCount, historyLint } = check(root, { only, siblingsBeside });
   for (const failure of failures) {
     process.stdout.write(`${failure.file}:${failure.line}: ${failure.message}\n`);
   }
   const failingFiles = new Set(failures.map((failure) => failure.file)).size;
+  const notes = failures.filter((failure) => failure.history).length;
+  const counted = [
+    failures.length > notes && plural(failures.length - notes, "failing pointer"),
+    notes > 0 && plural(notes, "history note"),
+  ].filter(Boolean);
   const summary =
     failures.length === 0
-      ? `no failing pointers (${plural(pointerCount, "pointer")} checked in ${plural(fileCount, "file")})`
-      : `${plural(failures.length, "failing pointer")} in ${plural(failingFiles, "file")}${reportOnly ? " (report only)" : ""}`;
+      ? `no failing pointers (${plural(pointerCount, "pointer")} checked in ${plural(fileCount, "file")})${historyLint ? ", no history notes" : ""}`
+      : `${counted.join(" and ")} in ${plural(failingFiles, "file")}${reportOnly ? " (report only)" : ""}`;
   process.stdout.write(`pointer-check: ${summary}\n`);
   return failures.length > 0 && !reportOnly ? 1 : 0;
 }
