@@ -150,8 +150,9 @@ const RECIPES = {
     "Move a branch beyond the core steps into a sibling file in the skill's folder, behind a\n" +
     'pointer that names the branch (.claude/skills/CLAUDE.md → "Writing a skill").',
   resident:
-    'Move the full telling to its home (docs/agents/domain.md → "Where a fact goes") and keep\n' +
-    "one line here.",
+    "Check each line against the admission rule, starting with the lines this commit adds\n" +
+    '(pacms-workspace docs/agents/domain.md → "Writing a lesson down"). Cut each line the rule does\n' +
+    'not admit, and move its full telling to its home (docs/agents/domain.md → "Where a fact goes").',
   data: "Split by concern: a workflow per group of jobs, translations per feature, alert rules per area.",
   code: CODE_RECIPE,
 };
@@ -175,7 +176,7 @@ const KINDS = {
   ".claude/skills/restock/scripts/build_order.py": "code",
 };
 
-test("each kind of file prints only its own recipe, read from its path, and always the footer", () => {
+test("each kind of file prints only its own recipe, read from its path, a resident file's without the split, and always the footer", () => {
   const dir = repo({}, Object.fromEntries(Object.keys(KINDS).map((path) => [path, text(25_000)])));
 
   const staged = run(dir, "--staged");
@@ -188,9 +189,38 @@ test("each kind of file prints only its own recipe, read from its path, and alwa
     for (const block of blocks) {
       const path = block.slice("size cap: ".length, block.indexOf(" is "));
       const header = `size cap: ${path} is 25,000 bytes = 6,250 tokens (bytes/4). The cap is 5,000 tokens (20,000 bytes).`;
-      assert.equal(block, `${header}\n\n${SPLIT}\n\n${RECIPES[KINDS[path]]}\n\n${FOOTER}\n\n`, path);
+      const advice = KINDS[path] === "resident" ? RECIPES.resident : `${SPLIT}\n\n${RECIPES[KINDS[path]]}`;
+      assert.equal(block, `${header}\n\n${advice}\n\n${FOOTER}\n\n`, path);
     }
   }
+});
+
+/* ------------------------------------------------------------------------ a narrowed cap */
+
+test("a size-cap mark narrows its own file's cap: one byte over is refused naming the mark, the cap itself passes", () => {
+  const dir = repo({ ".gitattributes": "/CLAUDE.md size-cap=10000\n" }, { "CLAUDE.md": text(10_001), "docs/CLAUDE.md": text(15_000) });
+
+  const refused = run(dir, "--staged");
+
+  assert.equal(refused.status, 1);
+  const header = "size cap: CLAUDE.md is 10,001 bytes = 2,501 tokens (bytes/4). Its cap is 2,500 tokens (10,000 bytes), narrowed by its size-cap mark in .gitattributes.";
+  assert.equal(refused.out, `${header}\n\n${RECIPES.resident}\n\n${FOOTER}\n\nsize cap: 1 refusal\n`);
+  commit(dir);
+  assert.deepEqual(sizeLines(run(dir).out), ["size cap: CLAUDE.md is over"]);
+  stage(dir, { "CLAUDE.md": text(10_000) });
+  assert.equal(run(dir, "--staged").status, 0);
+  commit(dir);
+  assert.equal(run(dir).status, 0);
+});
+
+test("a size-cap mark that narrows nothing is refused, however small its file; an unset one narrows nothing", () => {
+  const dir = repo({}, { ".gitattributes": "a.md size-cap=10,000\nb.md size-cap=20000\nc.md size-cap\nd.md -size-cap\n", "a.md": "a\n", "b.md": "b\n", "c.md": "c\n", "d.md": "d\n" });
+  const marks = ["a.md size-cap=10,000", "b.md size-cap=20000", "c.md size-cap"].map((mark) => mark.split(" "));
+  const bad = marks.map(([path, mark]) => `size cap: ${path}: its mark ${mark} narrows nothing: a size-cap mark takes a whole number of bytes under 20,000, as size-cap=10000`);
+
+  assert.deepEqual(sizeLines(run(dir, "--staged").out), bad);
+  commit(dir);
+  assert.deepEqual(sizeLines(run(dir).out), bad);
 });
 
 /* -------------------------------------------------------------------------- what is exempt */

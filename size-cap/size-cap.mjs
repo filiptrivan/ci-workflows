@@ -2,6 +2,12 @@
 // The Size cap: a hand-written file holds at most 5,000 tokens, counted as its bytes / 4, so
 // 20,000 bytes (a file at exactly 20,000 passes), unless its repo's Over-cap list holds it.
 //
+// A `size-cap=<bytes>` mark in the repo's `.gitattributes` narrows its files' cap to that whole
+// number under 20,000 (`/CLAUDE.md size-cap=10000`, for a resident file every session loads),
+// beside the marks that exempt a file, so a file's cap is read in one place. A mark that narrows
+// nothing (`size-cap=10,000`) fails, so a narrowed cap never quietly stops binding; no mark raises
+// the cap.
+//
 //   node size-cap.mjs --staged         a pre-commit hook's call: the files the commit adds or
 //                                      modifies, and the staged list against HEAD's
 //   node size-cap.mjs [--base <ref>]   CI's call: every file HEAD tracks, and its list against
@@ -16,8 +22,8 @@
 // never the working-tree file another session may be editing; unless the repo's `.gitattributes`
 // marks it `linguist-generated` or `linguist-vendored`, or git treats it as binary. No list of
 // extensions: one lets through every hand-written kind it forgets. A refusal prints the file's
-// size, then only the recipe for its kind (see kindOf), then the footer; size-cap.test.mjs pins
-// their words.
+// size and cap, then only the recipe for its kind (see kindOf), then the footer; size-cap.test.mjs
+// pins their words.
 //
 // The Over-cap list, `.over-cap-list` at the repo's root, one path per line, itself never judged:
 //   - a listed file over the cap passes;
@@ -37,9 +43,11 @@ import { join } from "node:path";
 
 const CAP_BYTES = 20_000;
 const LIST = ".over-cap-list";
+const MARK = "size-cap";
 
 const STALE_LINE = "on the Over-cap list but now under the cap (or deleted, or renamed): remove its line in this commit";
 const ADDED_LINE = "a line added to the Over-cap list: the list only shrinks; split the file instead";
+const BAD_MARK = `narrows nothing: a ${MARK} mark takes a whole number of bytes under 20,000, as ${MARK}=10000`;
 
 const SPLIT =
   "Split it before you commit, as its own commit, before your change. Split by design, never by\n" +
@@ -72,9 +80,11 @@ const RECIPES = {
   skill:
     "Move a branch beyond the core steps into a sibling file in the skill's folder, behind a\n" +
     'pointer that names the branch (.claude/skills/CLAUDE.md → "Writing a skill").',
+  // The admission rule holds every PACMS repo's resident files, and only the umbrella writes it.
   resident:
-    'Move the full telling to its home (docs/agents/domain.md → "Where a fact goes") and keep\n' +
-    "one line here.",
+    "Check each line against the admission rule, starting with the lines this commit adds\n" +
+    '(pacms-workspace docs/agents/domain.md → "Writing a lesson down"). Cut each line the rule does\n' +
+    'not admit, and move its full telling to its home (docs/agents/domain.md → "Where a fact goes").',
   data: "Split by concern: a workflow per group of jobs, translations per feature, alert rules per area.",
 };
 
@@ -152,20 +162,28 @@ function withSizes(files) {
 const isSet = (value) => value === "set" || value === "true";
 
 /**
- * The files of `files` the cap judges: unless `.gitattributes`, read where `attributeSource` (a
- * `git check-attr` flag) says, marks one generated or vendored, or git treats it as binary.
+ * Each of `files`' marks in `.gitattributes`, read where `attributeSource` (a `git check-attr`
+ * flag) says: a Map from its path to `{ <attribute>: <value> }`.
  */
-function judgedFiles(files, attributeSource) {
-  if (files.length === 0) return [];
+function marksOf(files, attributeSource) {
+  const marks = new Map(files.map((file) => [file.path, {}]));
+  if (files.length === 0) return marks;
   // `-z` prints `<path>\0<attribute>\0<value>\0` for each, and a value may be empty (`attr=`).
   const fields = git(
-    ["check-attr", "-z", "--stdin", ...attributeSource, "linguist-generated", "linguist-vendored", "diff"],
+    ["check-attr", "-z", "--stdin", ...attributeSource, MARK, "linguist-generated", "linguist-vendored", "diff"],
     files.map((file) => `${file.path}\0`).join(""),
   )
     .toString("utf8")
     .split("\0");
-  const marks = new Map(files.map((file) => [file.path, {}]));
   for (let at = 0; at + 2 < fields.length; at += 3) marks.get(fields[at])[fields[at + 1]] = fields[at + 2];
+  return marks;
+}
+
+/**
+ * The files of `files` the cap judges: unless their `marks` mark one generated or vendored, or git
+ * treats it as binary.
+ */
+function judgedFiles(files, marks) {
   const text = files.filter(({ path }) => {
     const mark = marks.get(path);
     return !isSet(mark["linguist-generated"]) && !isSet(mark["linguist-vendored"]) && mark.diff !== "unset";
@@ -181,13 +199,23 @@ function judgedFiles(files, attributeSource) {
   });
 }
 
+// A size-cap mark narrows its file's cap when it is a whole number of bytes under the cap.
+const narrows = (value) => /^[1-9]\d*$/.test(value) && Number(value) < CAP_BYTES;
+
 /**
- * The files of `files` over the cap: `big`, the path of every one, and `judged`, those the cap
- * judges, `.gitattributes` read as `attributeSource` says.
+ * The files of `files` over their cap, each with its `cap`: `big`, the path of every one, and
+ * `judged`, those the cap judges, `.gitattributes` read as `attributeSource` says; and `badMarks`,
+ * each file whose size-cap mark narrows nothing, with its `mark`.
  */
 function overCap(files, attributeSource) {
-  const big = withSizes(files.filter((file) => file.path !== LIST)).filter((file) => file.bytes > CAP_BYTES);
-  return { big: new Set(big.map((file) => file.path)), judged: judgedFiles(big, attributeSource) };
+  const sized = withSizes(files.filter((file) => file.path !== LIST));
+  const marks = marksOf(sized, attributeSource);
+  const markOf = (file) => marks.get(file.path)[MARK];
+  const big = sized.map((file) => ({ ...file, cap: narrows(markOf(file)) ? Number(markOf(file)) : CAP_BYTES })).filter((file) => file.bytes > file.cap);
+  const badMarks = sized
+    .filter((file) => !narrows(markOf(file)) && markOf(file) !== "unspecified" && markOf(file) !== "unset")
+    .map((file) => ({ path: file.path, mark: markOf(file) }));
+  return { big: new Set(big.map((file) => file.path)), judged: judgedFiles(big, marks), badMarks };
 }
 
 /** The Over-cap list `treeish` holds (`HEAD`, a base, or "" for the index) as a Set, or null when it holds none. */
@@ -210,19 +238,28 @@ function lastListAt(ref) {
 
 const grouped = (number) => String(number).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
-/** The refusal of a file over the cap: its size, then the recipe for its kind, then the footer. */
-function sizeRefusal({ path, bytes }) {
-  const size = `${grouped(bytes)} bytes = ${grouped(Math.ceil(bytes / 4))} tokens (bytes/4)`;
-  return `size cap: ${path} is ${size}. The cap is 5,000 tokens (20,000 bytes).\n\n${SPLIT}\n\n${RECIPES[kindOf(path)]}\n\n${FOOTER}\n`;
+const tokens = (bytes) => `${grouped(Math.ceil(bytes / 4))} tokens`;
+
+/**
+ * The refusal of a file over its cap: its size and cap, then the recipe for its kind, then the
+ * footer. A resident file is cut line by line against the admission rule, so it takes no split.
+ */
+function sizeRefusal({ path, bytes, cap }) {
+  const limit = `${tokens(cap)} (${grouped(cap)} bytes)`;
+  const capIs = cap === CAP_BYTES ? `The cap is ${limit}.` : `Its cap is ${limit}, narrowed by its ${MARK} mark in .gitattributes.`;
+  const kind = kindOf(path);
+  const advice = kind === "resident" ? RECIPES.resident : `${SPLIT}\n\n${RECIPES[kind]}`;
+  return `size cap: ${path} is ${grouped(bytes)} bytes = ${tokens(bytes)} (bytes/4). ${capIs}\n\n${advice}\n\n${FOOTER}\n`;
 }
 
 /**
- * Every refusal, sorted by path: each `judged` file `list` lacks, and each line of `list` that
- * `before` (the list it is compared with; null when no line counts as added) lacks, or whose file
- * `judgesLine` and is not among the `big` ones.
+ * Every refusal, sorted by path: each `judged` file `list` lacks, each of the `badMarks`, and each
+ * line of `list` that `before` (the list it is compared with; null when no line counts as added)
+ * lacks, or whose file `judgesLine` and is not among the `big` ones.
  */
-function refusalsOf({ big, judged }, list, before, judgesLine) {
+function refusalsOf({ big, judged, badMarks }, list, before, judgesLine) {
   const refusals = judged.filter((file) => !list.has(file.path)).map((file) => ({ path: file.path, text: sizeRefusal(file) }));
+  for (const { path, mark } of badMarks) refusals.push({ path, text: `size cap: ${path}: its mark ${mark === "set" ? MARK : `${MARK}=${mark}`} ${BAD_MARK}\n` });
   for (const path of list) {
     if (before && !before.has(path)) refusals.push({ path, text: `size cap: ${path}: ${ADDED_LINE}\n` });
     else if (judgesLine(path) && !big.has(path)) refusals.push({ path, text: `size cap: ${path}: ${STALE_LINE}\n` });
