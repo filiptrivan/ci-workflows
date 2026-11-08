@@ -150,7 +150,7 @@ const RECIPES = {
     "Move a branch beyond the core steps into a sibling file in the skill's folder, behind a\n" +
     'pointer that names the branch (.claude/skills/CLAUDE.md → "Writing a skill").',
   resident:
-    "Check each line against the admission rule, starting with the lines this commit adds\n" +
+    "Check each line against the admission rule, starting with the lines you added\n" +
     '(pacms-workspace docs/agents/domain.md → "Writing a lesson down"). Cut each line the rule does\n' +
     'not admit, and move its full telling to its home (docs/agents/domain.md → "Where a fact goes").',
   data: "Split by concern: a workflow per group of jobs, translations per feature, alert rules per area.",
@@ -213,14 +213,17 @@ test("a size-cap mark narrows its own file's cap: one byte over is refused namin
   assert.equal(run(dir).status, 0);
 });
 
-test("a size-cap mark that narrows nothing is refused, however small its file; an unset one narrows nothing", () => {
+test("a size-cap mark that narrows nothing is refused, however small its file; an unset one passes", () => {
   const dir = repo({}, { ".gitattributes": "a.md size-cap=10,000\nb.md size-cap=20000\nc.md size-cap\nd.md -size-cap\n", "a.md": "a\n", "b.md": "b\n", "c.md": "c\n", "d.md": "d\n" });
   const marks = ["a.md size-cap=10,000", "b.md size-cap=20000", "c.md size-cap"].map((mark) => mark.split(" "));
   const bad = marks.map(([path, mark]) => `size cap: ${path}: its mark ${mark} narrows nothing: a size-cap mark takes a whole number of bytes under 20,000, as size-cap=10000`);
 
-  assert.deepEqual(sizeLines(run(dir, "--staged").out), bad);
+  const staged = run(dir, "--staged");
   commit(dir);
-  assert.deepEqual(sizeLines(run(dir).out), bad);
+  for (const refused of [staged, run(dir)]) {
+    assert.equal(refused.status, 1);
+    assert.deepEqual(sizeLines(refused.out), bad);
+  }
 });
 
 /* -------------------------------------------------------------------------- what is exempt */
