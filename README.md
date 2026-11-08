@@ -3,8 +3,9 @@
 Shared CI for our projects:
 
 - the reusable **Claude review gate** (`.github/workflows/claude-gate.yml`), below;
-- the reusable **pointer check** (`.github/workflows/pointer-check.yml`), at the end:
-  [Pointer check](#pointer-check).
+- the reusable **pointer check** (`.github/workflows/pointer-check.yml`):
+  [Pointer check](#pointer-check);
+- the reusable **Size cap** (`.github/workflows/size-cap.yml`): [Size cap](#size-cap).
 
 ## What the gate does
 
@@ -205,8 +206,10 @@ input, and never moves again: it stays only for a caller not yet moved to
 ## Pointer check
 
 Fails CI when prose names a file, a symbol, an ADR or a heading that resolves to nothing or to more
-than one target. What counts as prose and as a pointer, why the whole tree is scanned on every run, the
-`.pointer-check.jsonc` schema and the paths that are always exempt: the header of
+than one target, and, in a repo whose `.pointer-check.jsonc` names its teammates, when a resident
+file (`CLAUDE.md`, `AGENTS.md`, `.claude/rules/*.md`) holds an issue number or a who-and-when note.
+What counts as prose, as a pointer and as a history note, why the whole tree is scanned on every
+run, the `.pointer-check.jsonc` schema and the paths that are always exempt: the header of
 `pointer-check/pointer-check.mjs`.
 
 Run it locally, from a repo checked out beside this one:
@@ -227,6 +230,36 @@ Add the caller, a job in an existing workflow:
 ```
 
 Its tests: `node --test pointer-check/pointer-check.test.mjs`, run by `.github/workflows/test.yml`.
+
+---
+
+## Size cap
+
+Fails a commit, or CI, when a hand-written file is over 20,000 bytes (5,000 tokens, at bytes / 4)
+and its repo's Over-cap list, `.over-cap-list`, does not hold it, or when the list breaks one of its
+rules. What is judged, the list's rules and each mode: the header of `size-cap/size-cap.mjs`. A file
+a script or tool writes, or another project's text, is exempt only by a `linguist-generated` or
+`linguist-vendored` mark in the repo's `.gitattributes`.
+
+Run it from a repo checked out beside this one:
+
+```bash
+node ../ci-workflows/size-cap/size-cap.mjs --staged            # the commit's files, as a pre-commit hook does
+node ../ci-workflows/size-cap/size-cap.mjs --base origin/main  # every tracked file, the list against main's
+node ../ci-workflows/size-cap/size-cap.mjs --write-list        # writes the list from the staged tree
+```
+
+Add the caller, a job in a workflow that runs on push and pull request; it passes the pull
+request's base, or the push's previous tip, as `--base`:
+
+```yaml
+  size-cap:
+    uses: filiptrivan/ci-workflows/.github/workflows/size-cap.yml@main
+```
+
+This repo is judged too: by its `.githooks/pre-commit`, once `scripts/setup-hooks.sh` points git
+there, and by the `size-cap` job of `.github/workflows/test.yml`, which also runs the tests,
+`node --test size-cap/size-cap.test.mjs`.
 
 ---
 

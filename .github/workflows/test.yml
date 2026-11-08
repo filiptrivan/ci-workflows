@@ -1,7 +1,9 @@
 name: Test
 
-# The pointer check's own tests, and the rule the workflows here keep; the reusable workflows run in
+# The pointer check's own tests, and the rules the workflows here keep; the reusable workflows run in
 # their callers, not here.
+# The Size cap's tests too, and one exception: the Size cap runs here as well (`size-cap`, below),
+# since agents commit to this repo as to its callers.
 
 on:
   push:
@@ -14,22 +16,37 @@ permissions:
 jobs:
   pointer-check:
     name: pointer check tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .nvmrc
+      - run: node --test pointer-check/pointer-check.test.mjs
+
+  size-cap-tests:
+    name: size cap tests
+    # ubuntu-slim, since the job is thin; workflow-policy/slim-jobs.test.mjs holds it to slim's limits.
+    runs-on: ubuntu-slim
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 22
-      - run: node --test pointer-check/pointer-check.test.mjs
+      - run: node --test size-cap/size-cap.test.mjs
+
+  size-cap:
+    uses: ./.github/workflows/size-cap.yml
 
   workflow-policy:
     name: workflow policy tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 22
-      - run: node --test workflow-policy/slim-jobs.test.mjs
+          node-version-file: .nvmrc
+      - run: node --test workflow-policy/slim-jobs.test.mjs workflow-policy/pins.test.mjs

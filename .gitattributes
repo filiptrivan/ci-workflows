@@ -1,0 +1,9 @@
+# Hooks and shell scripts stay LF: Git for Windows defaults to autocrlf=true, and a CRLF shebang
+# makes Git Bash fail with "bad interpreter: /usr/bin/env bash^M". Scoped narrowly so no other file
+# is renormalized.
+.githooks/** text eol=lf
+*.sh text eol=lf
+
+# A file a script or tool writes is marked linguist-generated here, and another project's text
+# linguist-vendored, so the Size cap skips it (size-cap/size-cap.mjs); every file was written by
+# hand on 2026-11-04, so none is.
