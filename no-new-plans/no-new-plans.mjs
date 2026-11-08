@@ -28,7 +28,7 @@ const NEW_PLAN =
 const ADDED_LINE = `a line added to ${LIST}: the list only shrinks; write an ADR instead (umbrella ADR 0154)`;
 
 function git(...args) {
-  const { status, stdout, stderr } = spawnSync("git", args, { encoding: "utf8", maxBuffer: 1 << 28 });
+  const { status, stdout, stderr } = spawnSync("git", ["-c", "core.quotePath=false", ...args], { encoding: "utf8", maxBuffer: 1 << 28 });
   return { ok: status === 0, stdout, stderr };
 }
 
