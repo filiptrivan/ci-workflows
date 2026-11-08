@@ -15,7 +15,7 @@ sets a blocking **`claude-gate`** status check. Routine PRs merge with **no huma
 changes to owner-reserved areas escalate to the repo owner. The gate re-reviews on every
 push (suppressing nits on re-review) and **fails closed** (red) if anything goes wrong.
 
-**Used by:** `pa-cms`, `pa-storefront` — each a ~30-line caller. All the logic lives here, once.
+**Used by:** one private repo (2026-11-03), through a ~30-line caller. All the logic lives here, once.
 
 ## How the prompt is split (why one workflow fits every repo)
 

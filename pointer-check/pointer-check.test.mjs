@@ -442,6 +442,21 @@ test("a path into an ignored directory that is itself a symlink, as a worktree's
   assert.deepEqual(check(dir).lines, ["docs/live.md:1: `Frontend/gone.ts` resolves to nothing"]);
 });
 
+// A worktree whose node_modules links to its main checkout's: a trailing-slash rule matches no
+// link, so the link itself is what the repository ignores, in its info/exclude.
+test("a pointer through an ignored symlink to a directory is skipped, the link itself asked about", () => {
+  const main = mkdtempSync(join(tmpdir(), "pointer-check-main-"));
+  writeTree(main, { "spiderly/agent/docs/e2e-testing/index.md": "# E2E\n" });
+  const dir = repo({
+    ".gitignore": "**/node_modules/\n",
+    "docs/live.md": "Read `Frontend/node_modules/spiderly/agent/docs/e2e-testing/index.md`; `docs/gone.md` is gone.\n",
+  });
+  mkdirSync(join(dir, "Frontend"));
+  symlinkSync(main, join(dir, "Frontend/node_modules"));
+  writeFileSync(join(dir, ".git/info/exclude"), "/Frontend/node_modules\n");
+  assert.deepEqual(check(dir).lines, ["docs/live.md:1: `docs/gone.md` resolves to nothing"]);
+});
+
 test("a sibling prefix at the end of the previous line still prefixes the pointer that opens the next", () => {
   const dir = repo({
     ".pointer-check.jsonc": JSON.stringify({ siblings: { "pa-cms": ["../pa-cms"] } }),

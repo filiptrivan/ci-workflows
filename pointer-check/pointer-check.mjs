@@ -1132,7 +1132,8 @@ function check(root, { only = [], siblingsBeside } = {}) {
 //
 // git refuses a path that runs through a symlink ("beyond a symbolic link", pnpm's node_modules)
 // and fails the whole batch with it, so each path is asked about only up to its first symlinked
-// directory: an ignored directory up to that point covers everything under it.
+// directory, that link included: an ignored directory before that point, or the link itself,
+// covers everything under it.
 function dropIgnored(failures) {
   const asked = new Map();
   for (const failure of failures) {
