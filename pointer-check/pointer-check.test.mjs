@@ -519,6 +519,15 @@ test("comments in a JSON-with-comments file are prose", () => {
   assert.deepEqual(check(dir).lines, [".pointer-check.jsonc:2: `src/gone.ts` resolves to nothing"]);
 });
 
+test("a Size cap guide in .size-cap.json is prose, since a refusal prints it; another JSON file's strings are not", () => {
+  const dir = repo({
+    ".size-cap.json": '{\n  "guides": {\n    "resident": "`docs/rules.md` → \\"Lines\\"",\n    "skill": "`docs/rules.md` → \\"Gone\\""\n  }\n}\n',
+    "package.json": '{ "description": "`docs/gone.md`" }\n',
+    "docs/rules.md": "# Rules\n\n## Lines\n",
+  });
+  assert.deepEqual(check(dir).lines, ['.size-cap.json:4: `docs/rules.md` → "Gone" resolves to nothing']);
+});
+
 test("a heading pointer to a missing heading fails the run with its file and line", () => {
   const dir = repo({
     "CLAUDE.md": "# Rules\n\n## Repo info\n\nBranches.\n",
