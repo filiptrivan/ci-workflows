@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// The rule that no job runs on `ubuntu-latest` and every package a job fetches from npm at run time
-// names a version, read as `workflows.mjs` reads a workflow. Why the rule: `pins.test.mjs`'s header.
+// The rule that no job runs on `ubuntu-latest`, every package a job fetches from npm at run time
+// names a version, and every setup-node step reads its Node from a `.nvmrc`, read as `workflows.mjs`
+// reads a workflow. Why the rule: `pins.test.mjs`'s header.
 // Another repo's step runs it over its own workflows, their pending `.afk/workflows/` patches
 // applied, and fails on any problem:
 //
@@ -101,17 +102,59 @@ function unversioned(spec) {
 }
 
 /**
- * The job's lines outside its `steps:`, where it names its runner (`runs-on:`, a matrix); a step's
+ * The job's steps, each the lines from its `-` to the next step's, a step written at its `steps:`
+ * key's own indent included.
+ */
+function stepsOf(job) {
+  const body = job.lines.filter((line) => line.code.trim());
+  const keyIndent = body.length ? indentOf(body[0].code) : 0;
+  const steps = [];
+  let inSteps = false;
+  let stepIndent = null;
+  for (const line of body) {
+    const depth = indentOf(line.code);
+    const item = /^\s*-(\s|$)/.test(line.code);
+    if (depth === keyIndent && !item) inSteps = /^\s*steps:/.test(line.code);
+    else if (inSteps) {
+      if (item && depth === (stepIndent ??= depth)) steps.push([]);
+      steps.at(-1)?.push(line);
+    }
+  }
+  return steps;
+}
+
+/**
+ * The job's lines outside its steps, where it names its runner (`runs-on:`, a matrix); a step's
  * name, script or heredoc may mention a runner it does not run on.
  */
 function outsideSteps(job) {
-  const body = job.lines.filter((line) => line.code.trim());
-  const keyIndent = body.length ? indentOf(body[0].code) : 0;
-  let inSteps = false;
-  return body.filter((line) => {
-    if (indentOf(line.code) === keyIndent) inSteps = /^\s*steps:/.test(line.code);
-    return !inSteps;
-  });
+  const inSteps = new Set(stepsOf(job).flat());
+  return job.lines.filter((line) => line.code.trim() && !inSteps.has(line));
+}
+
+/** The step's line that sets `key`, quoted or not. */
+const keyLine = (step, key) => step.find((line) => new RegExp(`^\\s*(-\\s+)?(["']?)${key}\\2\\s*:`).test(line.code));
+
+/** What a `key: value` line sets, its quotes stripped. */
+const valueOf = (line) => line.code.replace(/^[^:]*:\s*/, "").trim().replace(/^(["'])(.*)\1$/, "$2");
+
+/**
+ * How a step sets up a Node other than the one a `.nvmrc` names, naming the line, or null for a step
+ * that runs no setup-node or reads a `.nvmrc`: a `node-version`, which setup-node takes over a
+ * `node-version-file` ("If both the `node-version` and the `node-version-file` inputs are provided
+ * then the `node-version` input is used", its docs/advanced-usage.md on `main`, read 2026-11-05),
+ * else a `node-version-file` naming another file, or none. A step written as one flow mapping
+ * (`- { uses: … }`) is not read.
+ */
+function setupNodeProblem(step) {
+  const uses = keyLine(step, "uses");
+  // `i`: GitHub's owner and repository names ignore case.
+  if (!uses || !/^actions\/setup-node@/i.test(valueOf(uses))) return null;
+  const version = keyLine(step, "node-version");
+  if (version) return `writes its Node version in setup-node (line ${version.number})`;
+  const file = keyLine(step, "node-version-file");
+  if (file && /(^|\/)\.nvmrc$/.test(valueOf(file))) return null;
+  return `runs setup-node with no .nvmrc to read (line ${(file ?? uses).number})`;
 }
 
 /** How a problem with `spec`, read on line `number`, is mended. */
@@ -120,7 +163,8 @@ const nameOne = (spec, number) => `with no version (line ${number}); name one, $
 /**
  * What breaks the pin rule in `workflows` (`{ name, text }` each), one line per problem naming the
  * workflow, the job and the line: a job that names `ubuntu-latest` outside a comment and its steps,
- * its matrix included, and each package a job fetches from npm at run time with no version.
+ * its matrix included, each package a job fetches from npm at run time with no version, and each
+ * setup-node step that reads its Node from no `.nvmrc`.
  */
 export function pinProblems(workflows) {
   const problems = [];
@@ -132,6 +176,10 @@ export function pinProblems(workflows) {
       for (const { number, code } of commandLines(job)) {
         for (const spec of globalInstalls(code).filter(unversioned)) problems.push(`${where} installs ${spec} globally ${nameOne(spec, number)}`);
         for (const spec of npxFetches(code).filter(unversioned)) problems.push(`${where} runs ${spec} through npx -y ${nameOne(spec, number)}`);
+      }
+      for (const step of stepsOf(job)) {
+        const problem = setupNodeProblem(step);
+        if (problem) problems.push(`${where} ${problem}; read the Node from .nvmrc, node-version-file: .nvmrc`);
       }
     }
   }
@@ -167,7 +215,7 @@ function main(argv) {
   console.log(
     problems.length
       ? `pins: ${plural(problems.length, "problem")}`
-      : `pins: no job runs on ubuntu-latest or fetches an npm package with no version (${plural(workflows.length, "workflow")})`,
+      : `pins: no job runs on ubuntu-latest, fetches an npm package with no version or sets up Node from anything but .nvmrc (${plural(workflows.length, "workflow")})`,
   );
   return problems.length ? 1 : 0;
 }
