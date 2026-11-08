@@ -15,8 +15,8 @@
 //   node size-cap.mjs --write-list     writes the list from the staged tree, as the commit that
 //                                      installs the check does: every judged file over the cap
 //
-// Exits 1 printing every refusal, 0 otherwise, 2 when it cannot run (git fails, or --base names
-// no commit).
+// Exits 1 printing every refusal, 0 otherwise, 2 when it cannot run (git fails, --base names no
+// commit, or the repo's `.size-cap.json` is broken).
 //
 // What is judged: every tracked text file, measured as its blob, at pre-commit the staged one,
 // never the working-tree file another session may be editing; unless the repo's `.gitattributes`
@@ -24,6 +24,12 @@
 // extensions: one lets through every hand-written kind it forgets. A refusal prints the file's
 // size and cap, then only the recipe for its kind (see kindOf), then the footer; size-cap.test.mjs
 // pins their words.
+//
+// The recipes name no repo's files, so every repo, a public one too, reads the same words. A repo
+// that writes down how a kind of file stays small says where in its own `.size-cap.json`, read
+// from the judged tree as the Over-cap list is: `{ "guides": { "resident": "docs/rules.md" } }`
+// prints "This repo's guide: docs/rules.md." under each resident file's recipe. A kind it does not
+// know, or a guide that is not text, stops the check, so a typo never silently drops a guide.
 //
 // The Over-cap list, `.over-cap-list` at the repo's root, one path per line, itself never judged:
 //   - a listed file over the cap passes;
@@ -43,6 +49,7 @@ import { join } from "node:path";
 
 const CAP_BYTES = 20_000;
 const LIST = ".over-cap-list";
+const SETTINGS = ".size-cap.json";
 const CAP_MARK = "size-cap";
 
 const STALE_LINE = "on the Over-cap list but now under the cap (or deleted, or renamed): remove its line in this commit";
@@ -79,12 +86,10 @@ const RECIPES = {
   glossary: "Split the group by kind of work into two groups, and update their lines in GLOSSARY.md.",
   skill:
     "Move a branch beyond the core steps into a sibling file in the skill's folder, behind a\n" +
-    'pointer that names the branch (.claude/skills/CLAUDE.md → "Writing a skill").',
-  // The admission rule applies to every PACMS repo's resident files, and only the umbrella writes it.
+    "pointer that names the branch.",
   resident:
-    "Check each line against the admission rule, starting with the lines you added\n" +
-    '(pacms-workspace docs/agents/domain.md → "Writing a lesson down"). Cut each line the rule does\n' +
-    'not admit, and move its full telling to its home (docs/agents/domain.md → "Where a fact goes").',
+    "Starting with the lines you added, keep only what most sessions that load this file need. Move\n" +
+    "each other line to the doc or skill where its reader looks, leaving at most a one-line pointer.",
   data: "Split by concern: a workflow per group of jobs, translations per feature, alert rules per area.",
 };
 
@@ -92,7 +97,7 @@ const RECIPES = {
  * Which recipe a file takes, read from its path. Among Markdown, a resident file first, since a
  * directory-scoped `CLAUDE.md` sits in `.claude/skills/` too. Only a skill's Markdown takes the
  * skill's recipe, which moves a branch of prose; its scripts and data take their own kind's (on
- * 2026-11-04 three of the umbrella's over-cap files there were Python scripts).
+ * 2026-11-04 three over-cap files in skill folders were Python scripts).
  */
 function kindOf(path) {
   const name = path.slice(path.lastIndexOf("/") + 1);
@@ -111,10 +116,11 @@ function kindOf(path) {
 // git's own test for binary content, buffer_is_binary(): a NUL in the first 8,000 bytes.
 const BINARY_PROBE_BYTES = 8_000;
 
-class GitError extends Error {}
+/** Why the check cannot run: git failed, --base names no commit, or `.size-cap.json` is broken. */
+class CannotRun extends Error {}
 
 /**
- * git's stdout for `args`, a Buffer; throws a GitError when git fails. A mark exempts a file only
+ * git's stdout for `args`, a Buffer; throws CannotRun when git fails. A mark exempts a file only
  * from the repo's own `.gitattributes`, so a person's global attributes file and the system's are
  * not read; a clone's `.git/info/attributes` still is, since git has no switch for it.
  */
@@ -124,7 +130,7 @@ function git(args, input) {
     maxBuffer: 2 ** 30,
     env: { ...process.env, GIT_ATTR_NOSYSTEM: "1" },
   });
-  if (run.status !== 0) throw new GitError(`git ${args.join(" ")}: ${(run.stderr ?? "").toString().trim() || run.error?.message}`);
+  if (run.status !== 0) throw new CannotRun(`git ${args.join(" ")}: ${(run.stderr ?? "").toString().trim() || run.error?.message}`);
   return run.stdout;
 }
 
@@ -221,14 +227,40 @@ function overCap(files, attributeSource) {
   return { big: new Set(big.map((file) => file.path)), judged: judgedFiles(big, marks), badMarks };
 }
 
-/** The Over-cap list `treeish` holds (`HEAD`, a base, or "" for the index) as a Set, or null when it holds none. */
-function listAt(treeish) {
+/** The text of `path` in `treeish` (`HEAD`, a base, or "" for the index), or null when it holds none. */
+function blobAt(treeish, path) {
   // `--batch` answers `<spec> missing` for a path the tree lacks, or a HEAD not yet born.
-  const out = git(["cat-file", "--batch"], `${treeish}:${LIST}\n`);
+  const out = git(["cat-file", "--batch"], `${treeish}:${path}\n`);
   const header = out.subarray(0, out.indexOf(0x0a)).toString("utf8");
   if (header.endsWith(" missing")) return null;
-  const lines = out.subarray(header.length + 1, header.length + 1 + Number(header.split(" ")[2])).toString("utf8").split("\n");
-  return new Set(lines.map((line) => line.replace(/\r$/, "")).filter(Boolean));
+  return out.subarray(header.length + 1, header.length + 1 + Number(header.split(" ")[2])).toString("utf8");
+}
+
+/** The Over-cap list `treeish` holds as a Set, or null when it holds none. */
+function listAt(treeish) {
+  const list = blobAt(treeish, LIST);
+  return list === null ? null : new Set(list.split("\n").map((line) => line.replace(/\r$/, "")).filter(Boolean));
+}
+
+const isObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** The guides `treeish`'s `.size-cap.json` names, by kind; none when it holds no such file. */
+function guidesAt(treeish) {
+  const text = blobAt(treeish, SETTINGS);
+  if (text === null) return {};
+  let settings;
+  try {
+    settings = JSON.parse(text);
+  } catch (error) {
+    throw new CannotRun(`${SETTINGS} is not JSON (${error.message})`);
+  }
+  const guides = settings?.guides ?? {};
+  const known = ([kind, guide]) => Object.hasOwn(RECIPES, kind) && typeof guide === "string" && guide !== "";
+  if (!isObject(settings) || Object.keys(settings).some((key) => key !== "guides") || !isObject(guides) || !Object.entries(guides).every(known)) {
+    const shape = '{ "guides": { "<kind>": "<where this repo says how such a file stays small>" } }';
+    throw new CannotRun(`${SETTINGS} holds ${shape}, each kind one of ${Object.keys(RECIPES).join(", ")}`);
+  }
+  return guides;
 }
 
 /** The list `ref` holds, else the last its history held (before the commit that deleted it), else null. */
@@ -244,24 +276,27 @@ const grouped = (number) => String(number).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
 const tokens = (bytes) => `${grouped(Math.ceil(bytes / 4))} tokens`;
 
 /**
- * The refusal of a file over its cap: its size and cap, then the recipe for its kind, then the
- * footer. A resident file is cut line by line against the admission rule, so it takes no split.
+ * The refusal of a file over its cap: its size and cap, then the recipe for its kind and the repo's
+ * guide for that kind from `guides`, then the footer. A resident file is cut line by line, so it
+ * takes no split.
  */
-function sizeRefusal({ path, bytes, cap }) {
+function sizeRefusal({ path, bytes, cap }, guides) {
   const limit = `${tokens(cap)} (${grouped(cap)} bytes)`;
   const capIs = cap === CAP_BYTES ? `The cap is ${limit}.` : `Its cap is ${limit}, narrowed by its ${CAP_MARK} mark in .gitattributes.`;
   const kind = kindOf(path);
-  const advice = kind === "resident" ? RECIPES.resident : `${SPLIT}\n\n${RECIPES[kind]}`;
-  return `size cap: ${path} is ${grouped(bytes)} bytes = ${tokens(bytes)} (bytes/4). ${capIs}\n\n${advice}\n\n${FOOTER}\n`;
+  const advice = [kind === "resident" ? RECIPES.resident : `${SPLIT}\n\n${RECIPES[kind]}`];
+  if (guides[kind]) advice.push(`This repo's guide: ${guides[kind]}.`);
+  return `size cap: ${path} is ${grouped(bytes)} bytes = ${tokens(bytes)} (bytes/4). ${capIs}\n\n${advice.join("\n\n")}\n\n${FOOTER}\n`;
 }
 
 /**
- * Every refusal, sorted by path: each `judged` file `list` lacks, each of the `badMarks`, and each
- * line of `list` that `before` (the list it is compared with; null when no line counts as added)
- * lacks, or whose file `judgesLine` and is not among the `big` ones.
+ * Every refusal, sorted by path: each `judged` file `list` lacks, with its kind's guide from
+ * `guides`, each of the `badMarks`, and each line of `list` that `before` (the list it is compared
+ * with; null when no line counts as added) lacks, or whose file `judgesLine` and is not among the
+ * `big` ones.
  */
-function refusalsOf({ big, judged, badMarks }, list, before, judgesLine) {
-  const refusals = judged.filter((file) => !list.has(file.path)).map((file) => ({ path: file.path, text: sizeRefusal(file) }));
+function refusalsOf({ big, judged, badMarks }, guides, list, before, judgesLine) {
+  const refusals = judged.filter((file) => !list.has(file.path)).map((file) => ({ path: file.path, text: sizeRefusal(file, guides) }));
   for (const { path, mark } of badMarks) refusals.push({ path, text: `size cap: ${path}: its mark ${mark === "set" ? CAP_MARK : `${CAP_MARK}=${mark}`} ${BAD_MARK}\n` });
   for (const path of list) {
     if (before && !before.has(path)) refusals.push({ path, text: `size cap: ${path}: ${ADDED_LINE}\n` });
@@ -283,16 +318,16 @@ function stagedRefusals() {
   const addedOrModified = diff("--diff-filter=AMT");
   const unlisted = new Set([...(head ?? [])].filter((path) => !list.has(path)));
   const files = stagedFiles().filter((file) => addedOrModified.has(file.path) || unlisted.has(file.path));
-  return { refusals: refusalsOf(overCap(files, ["--cached"]), list, head, (path) => touched.has(path)), judged: files.length };
+  return { refusals: refusalsOf(overCap(files, ["--cached"]), guidesAt(""), list, head, (path) => touched.has(path)), judged: files.length };
 }
 
 /** CI's call: every file HEAD tracks and every line of its list, the list against `base`'s when given. */
 function treeRefusals(base) {
-  if (base !== undefined && !isCommit(base)) throw new GitError(`--base ${base} names no commit in this repo`);
+  if (base !== undefined && !isCommit(base)) throw new CannotRun(`--base ${base} names no commit in this repo`);
   const files = committedFiles("HEAD");
   const list = listAt("HEAD") ?? new Set();
   const before = base === undefined ? null : lastListAt(base);
-  return { refusals: refusalsOf(overCap(files, ["--source", "HEAD"]), list, before, () => true), judged: files.length };
+  return { refusals: refusalsOf(overCap(files, ["--source", "HEAD"]), guidesAt("HEAD"), list, before, () => true), judged: files.length };
 }
 
 const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
@@ -342,7 +377,7 @@ function main(argv) {
     );
     return refusals.length > 0 ? 1 : 0;
   } catch (error) {
-    if (!(error instanceof GitError)) throw error;
+    if (!(error instanceof CannotRun)) throw error;
     process.stderr.write(`size cap: ${error.message}\n`);
     return 2;
   }

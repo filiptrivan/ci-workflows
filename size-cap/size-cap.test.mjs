@@ -141,6 +141,36 @@ test("a size-cap mark that narrows nothing is refused, however small its file; a
   }
 });
 
+/* ------------------------------------------------------------------- a repo's own guides */
+
+test("a repo's .size-cap.json guide prints under its kind's recipe, read from the judged tree; a kind it leaves out prints none", () => {
+  const settings = JSON.stringify({ guides: { resident: 'docs/rules.md → "Lines"' } });
+  const dir = repo({}, { ".size-cap.json": settings, "CLAUDE.md": text(25_000), "src/orders.ts": text(25_000) });
+  writeFileSync(join(dir, ".size-cap.json"), JSON.stringify({ guides: { code: "unstaged.md" } }));
+
+  const staged = run(dir, "--staged");
+  commit(dir);
+
+  for (const refused of [staged, run(dir)]) {
+    assert.equal(refused.status, 1);
+    const header = (path) => `size cap: ${path} is 25,000 bytes = 6,250 tokens (bytes/4). The cap is 5,000 tokens (20,000 bytes).`;
+    assert.ok(refused.out.includes(`${header("CLAUDE.md")}\n\n${RECIPES.resident}\n\nThis repo's guide: docs/rules.md → "Lines".\n\n${FOOTER}\n`), refused.out);
+    assert.ok(refused.out.includes(`${header("src/orders.ts")}\n\n${SPLIT}\n\n${CODE_RECIPE}\n\n${FOOTER}\n`), refused.out);
+  }
+});
+
+test("a .size-cap.json the check cannot read stops it with exit 2, never a pass", () => {
+  const shape =
+    'size cap: .size-cap.json holds { "guides": { "<kind>": "<where this repo says how such a file stays small>" } }, ' +
+    "each kind one of code, test, template, markdown, glossary, skill, resident, data\n";
+  for (const settings of ['{ "guides": { "residnet": "a.md" } }', '{ "guides": { "resident": 1 } }', '{ "guide": {} }', "[]"]) {
+    assert.deepEqual(run(repo({}, { ".size-cap.json": settings }), "--staged"), { status: 2, out: shape }, settings);
+  }
+  const broken = run(repo({ ".size-cap.json": "{ guides" }));
+  assert.equal(broken.status, 2);
+  assert.match(broken.out, /^size cap: \.size-cap\.json is not JSON \(/);
+});
+
 /* -------------------------------------------------------------------------- what is exempt */
 
 test("a file .gitattributes marks linguist-generated or linguist-vendored is exempt, its mark staged in the same commit", () => {

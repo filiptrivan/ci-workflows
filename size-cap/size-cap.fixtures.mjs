@@ -83,11 +83,10 @@ export const RECIPES = {
   glossary: "Split the group by kind of work into two groups, and update their lines in GLOSSARY.md.",
   skill:
     "Move a branch beyond the core steps into a sibling file in the skill's folder, behind a\n" +
-    'pointer that names the branch (.claude/skills/CLAUDE.md → "Writing a skill").',
+    "pointer that names the branch.",
   resident:
-    "Check each line against the admission rule, starting with the lines you added\n" +
-    '(pacms-workspace docs/agents/domain.md → "Writing a lesson down"). Cut each line the rule does\n' +
-    'not admit, and move its full telling to its home (docs/agents/domain.md → "Where a fact goes").',
+    "Starting with the lines you added, keep only what most sessions that load this file need. Move\n" +
+    "each other line to the doc or skill where its reader looks, leaving at most a one-line pointer.",
   data: "Split by concern: a workflow per group of jobs, translations per feature, alert rules per area.",
   code: CODE_RECIPE,
 };
