@@ -6,6 +6,7 @@ Shared CI for our projects:
 - the reusable **pointer check** (`.github/workflows/pointer-check.yml`):
   [Pointer check](#pointer-check);
 - the reusable **Size cap** (`.github/workflows/size-cap.yml`): [Size cap](#size-cap).
+- the reusable **No new plans** (`.github/workflows/no-new-plans.yml`): [No new plans](#no-new-plans).
 
 ## What the gate does
 
@@ -260,6 +261,24 @@ request's base, or the push's previous tip, as `--base`:
 This repo is judged too: by its `.githooks/pre-commit`, once `scripts/setup-hooks.sh` points git
 there, and by the `size-cap` job of `.github/workflows/test.yml`, which also runs the tests,
 `node --test size-cap/size-cap.test.mjs`.
+
+## No new plans
+
+Fails a commit, or CI, when a file under `docs/plans/` is not on its repo's `.plans-list`, or when the
+list gained a line. Each mode and the list's rules: the header of `no-new-plans/no-new-plans.mjs`.
+
+```bash
+node ../ci-workflows/no-new-plans/no-new-plans.mjs --staged            # the commit's files, as a pre-commit hook does
+node ../ci-workflows/no-new-plans/no-new-plans.mjs --base origin/main  # every plan, the list against main's
+```
+
+Add the caller, a job in a workflow that runs on push and pull request; it passes the pull request's
+base, or the push's previous tip, as `--base`:
+
+```yaml
+  no-new-plans:
+    uses: filiptrivan/ci-workflows/.github/workflows/no-new-plans.yml@main
+```
 
 ---
 
