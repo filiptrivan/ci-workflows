@@ -163,7 +163,7 @@ test("a .size-cap.json the check cannot read stops it with exit 2, never a pass"
   const shape =
     'size cap: .size-cap.json holds { "guides": { "<kind>": "<where this repo says how such a file stays small>" } }, ' +
     "each kind one of code, test, template, markdown, glossary, skill, resident, data\n";
-  for (const settings of ['{ "guides": { "residnet": "a.md" } }', '{ "guides": { "resident": 1 } }', '{ "guide": {} }', "[]"]) {
+  for (const settings of ['{ "guides": { "residnet": "a.md" } }', '{ "guides": { "resident": 1 } }', '{ "guide": {} }', '{ "guides": null }', "[]"]) {
     assert.deepEqual(run(repo({}, { ".size-cap.json": settings }), "--staged"), { status: 2, out: shape }, settings);
   }
   const broken = run(repo({ ".size-cap.json": "{ guides" }));

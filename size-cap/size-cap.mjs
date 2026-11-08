@@ -49,6 +49,7 @@ import { join } from "node:path";
 
 const CAP_BYTES = 20_000;
 const LIST = ".over-cap-list";
+// Plain JSON, never JSONC: a caller's test harness copies this file alone, so it imports no parser.
 const SETTINGS = ".size-cap.json";
 const CAP_MARK = "size-cap";
 
@@ -83,7 +84,7 @@ const RECIPES = {
     "Keep <name>.md at its path as the index. Move each ## section word for word into <name>/.\n" +
     "The index is a table whose first cell is each moved section's old heading, so every\n" +
     "`<name>.md → \"Section\"` pointer still resolves. Lose nothing; reword nothing.",
-  glossary: "Split the group by kind of work into two groups, and update their lines in GLOSSARY.md.",
+  glossary: "Split the group by kind of work into two groups, and update the index lines that name them.",
   skill:
     "Move a branch beyond the core steps into a sibling file in the skill's folder, behind a\n" +
     "pointer that names the branch.",
@@ -116,7 +117,7 @@ function kindOf(path) {
 // git's own test for binary content, buffer_is_binary(): a NUL in the first 8,000 bytes.
 const BINARY_PROBE_BYTES = 8_000;
 
-/** Why the check cannot run: git failed, --base names no commit, or `.size-cap.json` is broken. */
+/** Why the check cannot run, which exits 2. */
 class CannotRun extends Error {}
 
 /**
@@ -254,9 +255,9 @@ function guidesAt(treeish) {
   } catch (error) {
     throw new CannotRun(`${SETTINGS} is not JSON (${error.message})`);
   }
-  const guides = settings?.guides ?? {};
-  const known = ([kind, guide]) => Object.hasOwn(RECIPES, kind) && typeof guide === "string" && guide !== "";
-  if (!isObject(settings) || Object.keys(settings).some((key) => key !== "guides") || !isObject(guides) || !Object.entries(guides).every(known)) {
+  const guides = isObject(settings) && "guides" in settings ? settings.guides : {};
+  const isGuide = ([kind, guide]) => Object.hasOwn(RECIPES, kind) && typeof guide === "string" && guide !== "";
+  if (!isObject(settings) || Object.keys(settings).some((key) => key !== "guides") || !isObject(guides) || !Object.entries(guides).every(isGuide)) {
     const shape = '{ "guides": { "<kind>": "<where this repo says how such a file stays small>" } }';
     throw new CannotRun(`${SETTINGS} holds ${shape}, each kind one of ${Object.keys(RECIPES).join(", ")}`);
   }

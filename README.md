@@ -240,8 +240,8 @@ and its repo's Over-cap list, `.over-cap-list`, does not hold it, or when the li
 rules. What is judged, the list's rules and each mode: the header of `size-cap/size-cap.mjs`. A file
 a script or tool writes, or another project's text, is exempt only by a `linguist-generated` or
 `linguist-vendored` mark in the repo's `.gitattributes`, and a `size-cap=<bytes>` mark there narrows a
-file's cap below 20,000 bytes, never above. The refusals name no repo's files; a repo's own
-`.size-cap.json` adds where it writes how each kind of file stays small.
+file's cap below 20,000 bytes, never above. The refusals name no repo's files; a repo's
+`.size-cap.json` can add, for each kind of file, a line naming that repo's own guide.
 
 Run it from a repo checked out beside this one:
 

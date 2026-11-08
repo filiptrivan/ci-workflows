@@ -80,7 +80,7 @@ export const RECIPES = {
     "Keep <name>.md at its path as the index. Move each ## section word for word into <name>/.\n" +
     "The index is a table whose first cell is each moved section's old heading, so every\n" +
     "`<name>.md → \"Section\"` pointer still resolves. Lose nothing; reword nothing.",
-  glossary: "Split the group by kind of work into two groups, and update their lines in GLOSSARY.md.",
+  glossary: "Split the group by kind of work into two groups, and update the index lines that name them.",
   skill:
     "Move a branch beyond the core steps into a sibling file in the skill's folder, behind a\n" +
     "pointer that names the branch.",
