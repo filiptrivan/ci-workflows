@@ -1,79 +1,16 @@
 // Pins the Size cap at its CLI, run as a pre-commit hook (`--staged`) and CI (whole-tree mode) run
 // it: each test builds a real git repo in a temp folder and asserts only the exit code and the
-// printed text.
+// printed text. Its builders and the refusals' expected words: size-cap.fixtures.mjs.
 //
 //   node --test size-cap/size-cap.test.mjs
 
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
 
-const CLI = join(dirname(fileURLToPath(import.meta.url)), "size-cap.mjs");
-
-const git = (dir, ...args) =>
-  execFileSync("git", ["-c", "user.name=Size Cap", "-c", "user.email=size-cap@example.com", "-c", "commit.gpgsign=false", ...args], {
-    cwd: dir,
-    encoding: "utf8",
-  }).trim();
-
-/** Writes `files` into `dir` and stages them; a null content deletes its file. */
-function stage(dir, files) {
-  for (const [path, content] of Object.entries(files)) {
-    if (content === null) rmSync(join(dir, path));
-    else {
-      mkdirSync(dirname(join(dir, path)), { recursive: true });
-      writeFileSync(join(dir, path), content);
-    }
-  }
-  git(dir, "add", "-A");
-}
-
-/** A real git repo whose HEAD holds `head` and whose index holds `staged` on top of it. */
-function repo(head, staged = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "size-cap-"));
-  git(dir, "init", "-q", "-b", "main");
-  stage(dir, { "README.md": "a repo\n", ...head });
-  git(dir, "commit", "-q", "--no-verify", "-m", "the tree before this commit");
-  stage(dir, staged);
-  return dir;
-}
-
-/** Commits what `dir` stages, as the commit CI then judges; HEAD's sha before it. */
-function commit(dir) {
-  const before = git(dir, "rev-parse", "HEAD");
-  git(dir, "commit", "-q", "--no-verify", "-m", "the commit");
-  return before;
-}
-
-function run(dir, ...args) {
-  const result = spawnSync(process.execPath, [CLI, ...args], { cwd: dir, encoding: "utf8" });
-  return { status: result.status, out: result.stdout + result.stderr };
-}
-
-/** `bytes` bytes of text, in lines. */
-const text = (bytes) => `${"x".repeat(79)}\n`.repeat(Math.ceil(bytes / 80)).slice(0, bytes);
-
-const SPLIT =
-  "Split it before you commit, as its own commit, before your change. Split by design, never by\n" +
-  "line count: each new file does one job behind a small interface and is named for that job.\n" +
-  "A split that only spreads the same code over more files fails review.";
-
-const FOOTER =
-  "If a script or tool writes this file, mark it `linguist-generated` in .gitattributes in this\n" +
-  "same commit instead. --no-verify does not help: CI runs the same check on the push.";
-
-const CODE_RECIPE =
-  "1. List the jobs this file does: groups of functions that call each other and share state,\n" +
-  "   and seldom call the rest.\n" +
-  "2. Move each job into its own file, behind the smallest interface its callers need. The\n" +
-  "   original file keeps the entry point and composes them.\n" +
-  "3. C#: a class over the cap holds more than one responsibility. Extract a class (a policy,\n" +
-  "   a calculator, a builder), never a `partial` class that only spreads one class over files.\n" +
-  "4. Run the tests. Behavior does not change in this commit.";
+import { ADDED, CODE_RECIPE, commit, FOOTER, git, LISTED, RECIPES, repo, run, sizeLines, SPLIT, stage, text } from "./size-cap.fixtures.mjs";
 
 /* ------------------------------------------------------------------------- what is refused */
 
@@ -135,27 +72,6 @@ test("--staged measures the staged blob, never the working-tree file another ses
 
 /* ----------------------------------------------------------------- each kind's own recipe */
 
-const RECIPES = {
-  test:
-    "Split with the code under test: one test file per module. If the module stays whole, split by\n" +
-    "behavior, one file per top-level describe, and move the shared fixtures and builders into\n" +
-    "<name>.fixtures.<ext>.",
-  template: "Extract a child component for each panel or repeated block, with inputs and outputs.",
-  markdown:
-    "Keep <name>.md at its path as the index. Move each ## section word for word into <name>/.\n" +
-    "The index is a table whose first cell is each moved section's old heading, so every\n" +
-    "`<name>.md → \"Section\"` pointer still resolves. Lose nothing; reword nothing.",
-  glossary: "Split the group by kind of work into two groups, and update their lines in GLOSSARY.md.",
-  skill:
-    "Move a branch beyond the core steps into a sibling file in the skill's folder, behind a\n" +
-    'pointer that names the branch (.claude/skills/CLAUDE.md → "Writing a skill").',
-  resident:
-    'Move the full telling to its home (docs/agents/domain.md → "Where a fact goes") and keep\n' +
-    "one line here.",
-  data: "Split by concern: a workflow per group of jobs, translations per feature, alert rules per area.",
-  code: CODE_RECIPE,
-};
-
 const KINDS = {
   "src/orders.test.ts": "test",
   "app/order.component.spec.ts": "test",
@@ -175,7 +91,7 @@ const KINDS = {
   ".claude/skills/restock/scripts/build_order.py": "code",
 };
 
-test("each kind of file prints only its own recipe, read from its path, and always the footer", () => {
+test("each kind of file prints only its own recipe, read from its path, a resident file's without the split, and always the footer", () => {
   const dir = repo({}, Object.fromEntries(Object.keys(KINDS).map((path) => [path, text(25_000)])));
 
   const staged = run(dir, "--staged");
@@ -188,9 +104,71 @@ test("each kind of file prints only its own recipe, read from its path, and alwa
     for (const block of blocks) {
       const path = block.slice("size cap: ".length, block.indexOf(" is "));
       const header = `size cap: ${path} is 25,000 bytes = 6,250 tokens (bytes/4). The cap is 5,000 tokens (20,000 bytes).`;
-      assert.equal(block, `${header}\n\n${SPLIT}\n\n${RECIPES[KINDS[path]]}\n\n${FOOTER}\n\n`, path);
+      const advice = KINDS[path] === "resident" ? RECIPES.resident : `${SPLIT}\n\n${RECIPES[KINDS[path]]}`;
+      assert.equal(block, `${header}\n\n${advice}\n\n${FOOTER}\n\n`, path);
     }
   }
+});
+
+/* ------------------------------------------------------------------------ a narrowed cap */
+
+test("a size-cap mark narrows its own file's cap: one byte over is refused naming the mark, the cap itself passes", () => {
+  const dir = repo({ ".gitattributes": "/CLAUDE.md size-cap=10000\n" }, { "CLAUDE.md": text(10_001), "docs/CLAUDE.md": text(15_000) });
+
+  const refused = run(dir, "--staged");
+
+  assert.equal(refused.status, 1);
+  const header = "size cap: CLAUDE.md is 10,001 bytes = 2,501 tokens (bytes/4). Its cap is 2,500 tokens (10,000 bytes), narrowed by its size-cap mark in .gitattributes.";
+  assert.equal(refused.out, `${header}\n\n${RECIPES.resident}\n\n${FOOTER}\n\nsize cap: 1 refusal\n`);
+  commit(dir);
+  assert.deepEqual(sizeLines(run(dir).out), ["size cap: CLAUDE.md is over"]);
+  stage(dir, { "CLAUDE.md": text(10_000) });
+  assert.equal(run(dir, "--staged").status, 0);
+  commit(dir);
+  assert.equal(run(dir).status, 0);
+});
+
+test("a size-cap mark that narrows nothing is refused, however small its file; an unset one passes", () => {
+  const dir = repo({}, { ".gitattributes": "a.md size-cap=10,000\nb.md size-cap=20000\nc.md size-cap\nd.md -size-cap\n", "a.md": "a\n", "b.md": "b\n", "c.md": "c\n", "d.md": "d\n" });
+  const marks = ["a.md size-cap=10,000", "b.md size-cap=20000", "c.md size-cap"].map((mark) => mark.split(" "));
+  const bad = marks.map(([path, mark]) => `size cap: ${path}: its mark ${mark} narrows nothing: a size-cap mark takes a whole number of bytes under 20,000, as size-cap=10000`);
+
+  const staged = run(dir, "--staged");
+  commit(dir);
+  for (const refused of [staged, run(dir)]) {
+    assert.equal(refused.status, 1);
+    assert.deepEqual(sizeLines(refused.out), bad);
+  }
+});
+
+/* ------------------------------------------------------------------- a repo's own guides */
+
+test("a repo's .size-cap.json guide prints under its kind's recipe, read from the judged tree; a kind it leaves out prints none", () => {
+  const settings = JSON.stringify({ guides: { resident: 'docs/rules.md → "Lines"' } });
+  const dir = repo({}, { ".size-cap.json": settings, "CLAUDE.md": text(25_000), "src/orders.ts": text(25_000) });
+  writeFileSync(join(dir, ".size-cap.json"), JSON.stringify({ guides: { code: "unstaged.md" } }));
+
+  const staged = run(dir, "--staged");
+  commit(dir);
+
+  for (const refused of [staged, run(dir)]) {
+    assert.equal(refused.status, 1);
+    const header = (path) => `size cap: ${path} is 25,000 bytes = 6,250 tokens (bytes/4). The cap is 5,000 tokens (20,000 bytes).`;
+    assert.ok(refused.out.includes(`${header("CLAUDE.md")}\n\n${RECIPES.resident}\n\nThis repo's guide: docs/rules.md → "Lines".\n\n${FOOTER}\n`), refused.out);
+    assert.ok(refused.out.includes(`${header("src/orders.ts")}\n\n${SPLIT}\n\n${CODE_RECIPE}\n\n${FOOTER}\n`), refused.out);
+  }
+});
+
+test("a .size-cap.json the check cannot read stops it with exit 2, never a pass", () => {
+  const shape =
+    'size cap: .size-cap.json holds { "guides": { "<kind>": "<where this repo says how such a file stays small>" } }, ' +
+    "each kind one of code, test, template, markdown, glossary, skill, resident, data\n";
+  for (const settings of ['{ "guides": { "residnet": "a.md" } }', '{ "guides": { "resident": 1 } }', '{ "guide": {} }', '{ "guides": null }', "[]"]) {
+    assert.deepEqual(run(repo({}, { ".size-cap.json": settings }), "--staged"), { status: 2, out: shape }, settings);
+  }
+  const broken = run(repo({ ".size-cap.json": "{ guides" }));
+  assert.equal(broken.status, 2);
+  assert.match(broken.out, /^size cap: \.size-cap\.json is not JSON \(/);
 });
 
 /* -------------------------------------------------------------------------- what is exempt */
@@ -247,15 +225,6 @@ test("a file git treats as binary is skipped: a NUL in its first 8,000 bytes, or
 });
 
 /* --------------------------------------------------------------------- the Over-cap list */
-
-const LISTED = (path) => `size cap: ${path}: on the Over-cap list but now under the cap (or deleted, or renamed): remove its line in this commit`;
-const ADDED = (path) => `size cap: ${path}: a line added to the Over-cap list: the list only shrinks; split the file instead`;
-/** Each refusal's first line, a size refusal's cut to `size cap: <path> is over`. */
-const sizeLines = (out) =>
-  out
-    .split("\n")
-    .filter((line) => /^size cap: \S+(?:: | is )/.test(line))
-    .map((line) => line.replace(/ is [\d,]+ bytes.*/, " is over"));
 
 test("a listed file over the cap passes, as the commit grows it or marks it generated, the list's lines CRLF or not", () => {
   const head = { ".over-cap-list": "src/orders.ts\r\nsrc/api.ts\n", "src/orders.ts": text(40_000), "src/api.ts": text(40_000) };

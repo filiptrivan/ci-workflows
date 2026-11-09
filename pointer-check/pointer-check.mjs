@@ -4,7 +4,8 @@
 //
 //   node pointer-check.mjs [--root <dir>] [--siblings-beside <checkout>] [--staged] [--report-only] [path ...]
 //
-// Prose is every Markdown file and every comment in a code file, minus the exempt set. A pointer
+// Prose is every Markdown file, every comment in a code file and each guide in a root
+// `.size-cap.json` (sizeCapGuides), minus the exempt set. A pointer
 // is one of five explicit forms; anything else, a bare backticked word above all, is never one,
 // because a missed pointer costs less than a false failure that teaches people to ignore the check:
 //
@@ -1050,12 +1051,33 @@ function historyNotes(teammates = []) {
   };
 }
 
+// A Size cap refusal prints each guide of a repo's `.size-cap.json` (size-cap/size-cap.mjs), so a
+// guide is prose and its pointers are checked; every other JSON string is data.
+const SIZE_CAP_SETTINGS = ".size-cap.json";
+
+function sizeCapGuides(text) {
+  let guides;
+  try {
+    guides = JSON.parse(text)?.guides;
+  } catch {
+    return [];
+  }
+  if (typeof guides !== "object" || guides === null) return [];
+  return Object.values(guides)
+    .filter((guide) => typeof guide === "string")
+    .map((guide) => {
+      const at = text.indexOf(JSON.stringify(guide));
+      return { line: at === -1 ? 1 : text.slice(0, at).split("\n").length, text: guide, kind: "comment" };
+    });
+}
+
 function prose(repo, file) {
   const extension = extensionOf(file);
   const text = readText(join(repo.root, file));
   if (text === undefined) return [];
   if (SNAPSHOT_HEADER.test(text.slice(0, text.indexOf("\n") === -1 ? undefined : text.indexOf("\n")))) return [];
   if (MARKDOWN_EXTENSIONS.has(extension)) return markdownLines(text).map((line) => ({ ...line, kind: "markdown" }));
+  if (file === SIZE_CAP_SETTINGS) return sizeCapGuides(text);
   const language = languageOf(file);
   if (!language) return [];
   return language.scan(text).comments.map((line) => ({ ...line, kind: "comment" }));
@@ -1110,7 +1132,8 @@ function check(root, { only = [], siblingsBeside } = {}) {
 //
 // git refuses a path that runs through a symlink ("beyond a symbolic link", pnpm's node_modules)
 // and fails the whole batch with it, so each path is asked about only up to its first symlinked
-// directory: an ignored directory up to that point covers everything under it.
+// directory, that link included: an ignored directory before that point, or the link itself,
+// covers everything under it.
 function dropIgnored(failures) {
   const asked = new Map();
   for (const failure of failures) {
