@@ -6,6 +6,7 @@ Shared CI for our projects:
 - the reusable **pointer check** (`.github/workflows/pointer-check.yml`):
   [Pointer check](#pointer-check);
 - the reusable **Size cap** (`.github/workflows/size-cap.yml`): [Size cap](#size-cap).
+- the reusable **No new plans** (`.github/workflows/no-new-plans.yml`): [No new plans](#no-new-plans).
 
 ## What the gate does
 
@@ -14,7 +15,7 @@ sets a blocking **`claude-gate`** status check. Routine PRs merge with **no huma
 changes to owner-reserved areas escalate to the repo owner. The gate re-reviews on every
 push (suppressing nits on re-review) and **fails closed** (red) if anything goes wrong.
 
-**Used by:** `pa-cms`, `pa-storefront` — each a ~30-line caller. All the logic lives here, once.
+**Used by:** one private repo (2026-11-03), through a ~30-line caller. All the logic lives here, once.
 
 ## How the prompt is split (why one workflow fits every repo)
 
@@ -206,8 +207,10 @@ input, and never moves again: it stays only for a caller not yet moved to
 ## Pointer check
 
 Fails CI when prose names a file, a symbol, an ADR or a heading that resolves to nothing or to more
-than one target. What counts as prose and as a pointer, why the whole tree is scanned on every run, the
-`.pointer-check.jsonc` schema and the paths that are always exempt: the header of
+than one target, and, in a repo whose `.pointer-check.jsonc` names its teammates, when a resident
+file (`CLAUDE.md`, `AGENTS.md`, `.claude/rules/*.md`) holds an issue number or a who-and-when note.
+What counts as prose, as a pointer and as a history note, why the whole tree is scanned on every
+run, the `.pointer-check.jsonc` schema and the paths that are always exempt: the header of
 `pointer-check/pointer-check.mjs`.
 
 Run it locally, from a repo checked out beside this one:
@@ -237,7 +240,9 @@ Fails a commit, or CI, when a hand-written file is over 20,000 bytes (5,000 toke
 and its repo's Over-cap list, `.over-cap-list`, does not hold it, or when the list breaks one of its
 rules. What is judged, the list's rules and each mode: the header of `size-cap/size-cap.mjs`. A file
 a script or tool writes, or another project's text, is exempt only by a `linguist-generated` or
-`linguist-vendored` mark in the repo's `.gitattributes`.
+`linguist-vendored` mark in the repo's `.gitattributes`, and a `size-cap=<bytes>` mark there narrows a
+file's cap below 20,000 bytes, never above. The refusals name no repo's files; a repo's
+`.size-cap.json` can add, for each kind of file, a line naming that repo's own guide.
 
 Run it from a repo checked out beside this one:
 
@@ -259,9 +264,44 @@ This repo is judged too: by its `.githooks/pre-commit`, once `scripts/setup-hook
 there, and by the `size-cap` job of `.github/workflows/test.yml`, which also runs the tests,
 `node --test size-cap/size-cap.test.mjs`.
 
+## No new plans
+
+Fails a commit, or CI, when a file under `docs/plans/` is not on its repo's `.plans-list`, or when the
+list gained a line. Each mode and the list's rules: the header of `no-new-plans/no-new-plans.mjs`.
+
+```bash
+node ../ci-workflows/no-new-plans/no-new-plans.mjs --staged            # the commit's files, as a pre-commit hook does
+node ../ci-workflows/no-new-plans/no-new-plans.mjs --base origin/main  # every plan, the list against main's
+```
+
+Add the caller, a job in a workflow that runs on push and pull request; it passes the pull request's
+base, or the push's previous tip, as `--base`:
+
+```yaml
+  no-new-plans:
+    uses: filiptrivan/ci-workflows/.github/workflows/no-new-plans.yml@main
+```
+
 ---
 
 ## Workflows on `ubuntu-slim`
 
 A job here moves to `ubuntu-slim` only within slim's limits: the header of
 `workflow-policy/slim-jobs.test.mjs`, run by `.github/workflows/test.yml`.
+
+## No `ubuntu-latest`, no unversioned npm package, no Node version in a workflow
+
+No job runs on `ubuntu-latest`, every package a job fetches from npm at run time
+(`npm install -g`, `npx -y`) names a version, and every `actions/setup-node` step reads its Node
+from a `.nvmrc`: the header of `workflow-policy/pins.test.mjs`, run by `.github/workflows/test.yml`.
+Another repo runs the checker over its own workflows from a checkout of this one:
+
+```yaml
+      - uses: actions/checkout@v6
+        with:
+          repository: filiptrivan/ci-workflows
+          ref: main
+          path: ci-workflows
+          persist-credentials: false
+      - run: node ci-workflows/workflow-policy/pins.mjs --root .
+```

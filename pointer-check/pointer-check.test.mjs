@@ -429,6 +429,34 @@ test("an ignored path through a symlinked directory is skipped and does not sink
   assert.deepEqual(check(dir).lines, ["docs/live.md:2: `docs/gone.md` resolves to nothing"]);
 });
 
+test("a path into an ignored directory that is itself a symlink, as a worktree's node_modules is, is skipped", () => {
+  const outside = mkdtempSync(join(tmpdir(), "pointer-check-modules-"));
+  mkdirSync(join(outside, "spiderly/docs"), { recursive: true });
+  writeFileSync(join(outside, "spiderly/docs/index.md"), "# Docs\n");
+  const dir = repo({
+    ".gitignore": "/Frontend/node_modules\n",
+    "Frontend/app.ts": "export const app = 1;\n",
+    "docs/live.md": "Spiderly's docs: `Frontend/node_modules/spiderly/docs/index.md`; `Frontend/gone.ts` is gone.\n",
+  });
+  symlinkSync(outside, join(dir, "Frontend/node_modules"));
+  assert.deepEqual(check(dir).lines, ["docs/live.md:1: `Frontend/gone.ts` resolves to nothing"]);
+});
+
+// A worktree whose node_modules links to its main checkout's: a trailing-slash rule matches no
+// link, so the link itself is what the repository ignores, in its info/exclude.
+test("a pointer through an ignored symlink to a directory is skipped, the link itself asked about", () => {
+  const main = mkdtempSync(join(tmpdir(), "pointer-check-main-"));
+  writeTree(main, { "spiderly/agent/docs/e2e-testing/index.md": "# E2E\n" });
+  const dir = repo({
+    ".gitignore": "**/node_modules/\n",
+    "docs/live.md": "Read `Frontend/node_modules/spiderly/agent/docs/e2e-testing/index.md`; `docs/gone.md` is gone.\n",
+  });
+  mkdirSync(join(dir, "Frontend"));
+  symlinkSync(main, join(dir, "Frontend/node_modules"));
+  writeFileSync(join(dir, ".git/info/exclude"), "/Frontend/node_modules\n");
+  assert.deepEqual(check(dir).lines, ["docs/live.md:1: `docs/gone.md` resolves to nothing"]);
+});
+
 test("a sibling prefix at the end of the previous line still prefixes the pointer that opens the next", () => {
   const dir = repo({
     ".pointer-check.jsonc": JSON.stringify({ siblings: { "pa-cms": ["../pa-cms"] } }),
@@ -506,6 +534,15 @@ test("comments in a JSON-with-comments file are prose", () => {
   assert.deepEqual(check(dir).lines, [".pointer-check.jsonc:2: `src/gone.ts` resolves to nothing"]);
 });
 
+test("a Size cap guide in .size-cap.json is prose, since a refusal prints it; another JSON file's strings are not", () => {
+  const dir = repo({
+    ".size-cap.json": '{\n  "guides": {\n    "resident": "`docs/rules.md` → \\"Lines\\"",\n    "skill": "`docs/rules.md` → \\"Gone\\""\n  }\n}\n',
+    "package.json": '{ "description": "`docs/gone.md`" }\n',
+    "docs/rules.md": "# Rules\n\n## Lines\n",
+  });
+  assert.deepEqual(check(dir).lines, ['.size-cap.json:4: `docs/rules.md` → "Gone" resolves to nothing']);
+});
+
 test("a heading pointer to a missing heading fails the run with its file and line", () => {
   const dir = repo({
     "CLAUDE.md": "# Rules\n\n## Repo info\n\nBranches.\n",
@@ -565,6 +602,50 @@ test("a heading pointer takes the ASCII arrow too, in a comment as in Markdown",
     "src/a.ts": '// Branches: `CLAUDE.md` -> "Repo info"; tags: `CLAUDE.md` -> "Release tags".\nexport const a = 1;\n',
   });
   assert.deepEqual(check(dir).lines, ['src/a.ts:1: `CLAUDE.md` -> "Release tags" resolves to nothing']);
+});
+
+test("a heading named without quotes fails, after either arrow, its message giving the quoted form", () => {
+  const dir = repo({
+    "CLAUDE.md": "# Rules\n\n## Repo info\n",
+    "GLOSSARY.md": "# Terms\n\n**Ready frontier**: the tickets.\n\n**Pool**: the accounts.\n",
+    "docs/live.md":
+      'Fine: `CLAUDE.md` → "Repo info". Branches: `CLAUDE.md` → Repo info, tags: `CLAUDE.md` -> Repo info.\n' +
+      "Ready ones (`GLOSSARY.md` → Ready frontier): first. The accounts: `GLOSSARY.md` → **Pool**.\n" +
+      "Ships from `GLOSSARY.md` → V.V. warehouse. Then `CLAUDE.md` → Repo info - the rest, `CLAUDE.md` → 4A, step 1.\n",
+    "src/a.ts": "// Branches: `CLAUDE.md` ->\n// Repo info, wrapped.\nexport const a = 1;\n",
+  });
+  const result = check(dir);
+  assert.deepEqual(result.lines, [
+    'docs/live.md:1: `CLAUDE.md` → Repo info names a heading without quotes: write `CLAUDE.md` → "Repo info"',
+    'docs/live.md:1: `CLAUDE.md` -> Repo info names a heading without quotes: write `CLAUDE.md` -> "Repo info"',
+    'docs/live.md:2: `GLOSSARY.md` → Ready frontier names a heading without quotes: write `GLOSSARY.md` → "Ready frontier"',
+    'docs/live.md:2: `GLOSSARY.md` → Pool names a heading without quotes: write `GLOSSARY.md` → "Pool"',
+    'docs/live.md:3: `GLOSSARY.md` → V.V. warehouse names a heading without quotes: write `GLOSSARY.md` → "V.V. warehouse"',
+    'docs/live.md:3: `CLAUDE.md` → Repo info names a heading without quotes: write `CLAUDE.md` → "Repo info"',
+    'docs/live.md:3: `CLAUDE.md` → 4A names a heading without quotes: write `CLAUDE.md` → "4A"',
+    'src/a.ts:1: `CLAUDE.md` -> Repo info names a heading without quotes: write `CLAUDE.md` -> "Repo info"',
+  ]);
+  assert.equal(result.status, 1);
+});
+
+test("an unquoted heading fails even where its file is a sibling's that is not checked out", () => {
+  const dir = repo({
+    ".pointer-check.jsonc": JSON.stringify({ siblings: { "pa-cms": ["../pa-cms"] } }),
+    "docs/live.md": "Entities: pa-cms `CLAUDE.md` → Entity changes; `pa-cms/CLAUDE.md` → \"Gone\" is skipped.\n",
+  });
+  assert.deepEqual(check(dir).lines, [
+    'docs/live.md:1: `CLAUDE.md` → Entity changes names a heading without quotes: write `CLAUDE.md` → "Entity changes"',
+  ]);
+});
+
+test("an arrow after a Markdown file is a heading pointer only when a word follows it", () => {
+  const dir = repo({
+    "docs/old.md": "# Old\n",
+    "docs/new.md": "# New\n",
+    "src/build.ts": "export const build = 1;\n",
+    "docs/live.md": "Moved: `docs/old.md` → `docs/new.md`. The bundle: `src/build.ts` → writes `dist/`.\n",
+  });
+  assert.deepEqual(check(dir).lines, []);
 });
 
 test("a heading pointer into a sibling repo is checked there, and skipped when the sibling is absent", () => {
@@ -676,4 +757,91 @@ test("a name a workflow's own code uses is in use", () => {
       "jobs:\n  report:\n    # `always()` keeps this step running after a failure; `never()` is not a function.\n    if: always()\n",
   });
   assert.deepEqual(check(dir).lines, [".github/workflows/gate.yml:3: `never()` resolves to nothing"]);
+});
+
+// The history lint: a repo whose config names its teammates refuses history in its resident files.
+const TEAM = { historyLint: { teammates: ["Filip", "Mira"] } };
+const HISTORY = "a resident file holds a rule and its reason, its history goes in the commit message or an ADR";
+
+test("an issue number in a resident file fails outside code; elsewhere, or in code, it passes", () => {
+  const dir = repo({
+    ".pointer-check.jsonc": JSON.stringify(TEAM),
+    "CLAUDE.md": "# Rules\n\n- Claim a ticket first (pacms-workspace#371, the poster).\n- Write `#56 (title)`, never #56.\n",
+    "docs/guide.md": "Built in pacms-workspace#371 and #56.\n",
+  });
+  const result = check(dir);
+  assert.deepEqual(result.lines, [
+    `CLAUDE.md:3: \`pacms-workspace#371\` is an issue number: ${HISTORY}`,
+    `CLAUDE.md:4: \`#56\` is an issue number: ${HISTORY}`,
+  ]);
+  assert.equal(result.status, 1);
+});
+
+test("a teammate's name before a date fails in any resident file; a dated fact and an ADR number pass", () => {
+  const dir = repo({
+    ".pointer-check.jsonc": JSON.stringify(TEAM),
+    "docs/adr/0047-prose.md": "# 0047. Prose\n",
+    "AGENTS.md": "Plain English (Filip, 2026-11-01): the plainest word.\n",
+    "apps/rs/CLAUDE.md": "The host is gone (2026-09-09), measured 2026-11-06 (ADR 0047).\n",
+    ".claude/rules/api.md": "Ask first (umbrella ADR 0047, Mira 2026-10-30, after a refusal).\n",
+    "docs/guide.md": "Filip, 2026-11-01, said so.\n",
+  });
+  assert.deepEqual(check(dir).lines, [
+    `.claude/rules/api.md:1: \`Mira 2026-10-30\` is a who-and-when note: ${HISTORY}`,
+    `AGENTS.md:1: \`Filip, 2026-11-01\` is a who-and-when note: ${HISTORY}`,
+  ]);
+});
+
+test("the summary counts history notes apart from failing pointers", () => {
+  const dir = repo({
+    ".pointer-check.jsonc": JSON.stringify(TEAM),
+    "CLAUDE.md": "See `src/gone.ts` (#12, Filip, 2026-09-23).\n",
+  });
+  assert.match(check(dir).stdout, /pointer-check: 1 failing pointer and 2 history notes in 1 file\n/);
+  const clean = repo({ ".pointer-check.jsonc": JSON.stringify(TEAM), "CLAUDE.md": "Measured 2026-11-06.\n" });
+  assert.match(check(clean).stdout, /pointer-check: no failing pointers \(0 pointers checked in 1 file\), no history notes\n/);
+});
+
+test("a note wrapped across two lines fails at its first; a full issue address fails whole; a link anchor and a fence pass", () => {
+  const dir = repo({
+    ".pointer-check.jsonc": JSON.stringify({ historyLint: { teammates: ["Filip", "Đura"] } }),
+    "GLOSSARY.md": "# Glossary\n",
+    "CLAUDE.md":
+      "Plain English (Filip,\n2026-11-01): the plainest word, as Đura\n2026-10-30 said.\n" +
+      "Built in filiptrivan/pacms-workspace#831; see [a term](GLOSSARY.md#1-term).\n" +
+      "```\ngh issue view #12\n```\n",
+  });
+  assert.deepEqual(check(dir).lines, [
+    `CLAUDE.md:1: \`Filip, 2026-11-01\` is a who-and-when note: ${HISTORY}`,
+    `CLAUDE.md:2: \`Đura 2026-10-30\` is a who-and-when note: ${HISTORY}`,
+    `CLAUDE.md:4: \`filiptrivan/pacms-workspace#831\` is an issue number: ${HISTORY}`,
+  ]);
+});
+
+test("a teammate's name up to three words before a date is a note; one farther off is not", () => {
+  const dir = repo({
+    ".pointer-check.jsonc": JSON.stringify(TEAM),
+    "CLAUDE.md":
+      "Who starts it (Filip, grilled 2026-10-17).\nAsked once (Filip's ask, 2026-10-25).\n" +
+      "Filip's own runs go to staging, which restore.sh reset on 2026-11-02.\n",
+  });
+  assert.deepEqual(check(dir).lines, [
+    `CLAUDE.md:1: \`Filip, grilled 2026-10-17\` is a who-and-when note: ${HISTORY}`,
+    `CLAUDE.md:2: \`Filip's ask, 2026-10-25\` is a who-and-when note: ${HISTORY}`,
+  ]);
+});
+
+test("a history lint with no teammates refuses issue numbers, and a dated fact passes", () => {
+  const dir = repo({
+    ".pointer-check.jsonc": JSON.stringify({ historyLint: {} }),
+    "CLAUDE.md": "Measured 2026-11-06, read 2026-11-06; built in #12.\n",
+  });
+  const result = check(dir);
+  assert.deepEqual(result.lines, [`CLAUDE.md:1: \`#12\` is an issue number: ${HISTORY}`]);
+  assert.match(result.stdout, /pointer-check: 1 history note in 1 file\n/);
+});
+
+test("a repo whose config names no teammates runs no history lint", () => {
+  const dir = repo({ "CLAUDE.md": "Claim a ticket first (Filip, 2026-09-23, pacms-workspace#371).\n" });
+  assert.deepEqual(check(dir).lines, []);
 });
