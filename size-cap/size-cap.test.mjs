@@ -85,6 +85,8 @@ const KINDS = {
   "CLAUDE.md": "resident",
   "pa/AGENTS.md": "resident",
   ".claude/skills/CLAUDE.md": "resident",
+  ".claude/rules/orders.md": "resident",
+  ".claude/rules/admin/pages.md": "resident",
   ".github/workflows/build.yml": "data",
   "messages/sr.json": "data",
   "Backend/OrderLifecycle.cs": "code",
