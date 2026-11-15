@@ -96,16 +96,19 @@ const RECIPES = {
 
 /**
  * Which recipe a file takes, read from its path. Among Markdown, a resident file first, since a
- * directory-scoped `CLAUDE.md` sits in `.claude/skills/` too. Only a skill's Markdown takes the
- * skill's recipe, which moves a branch of prose; its scripts and data take their own kind's (on
- * 2026-11-04 three over-cap files in skill folders were Python scripts).
+ * directory-scoped `CLAUDE.md` sits in `.claude/skills/` too. A rule file under `.claude/rules/` is
+ * resident: Claude Code loads every `.md` file there, in a subfolder too
+ * (code.claude.com/docs/en/memory, read 2026-11-14). So the split recipe would only add files that
+ * load. Only a skill's Markdown takes the skill's recipe, which moves a branch of prose; its
+ * scripts and data take their own kind's (on 2026-11-04 three over-cap files in skill folders were
+ * Python scripts).
  */
 function kindOf(path) {
   const name = path.slice(path.lastIndexOf("/") + 1);
   if (/\.(test|spec)\./.test(name) || name.endsWith("Tests.cs")) return "test";
   if (name.endsWith(".component.html")) return "template";
   if (/\.mdx?$/.test(name)) {
-    if (name === "CLAUDE.md" || name === "AGENTS.md") return "resident";
+    if (name === "CLAUDE.md" || name === "AGENTS.md" || /(^|\/)\.claude\/rules\//.test(path)) return "resident";
     if (path.startsWith("glossary/")) return "glossary";
     if (/(^|\/)\.claude\/skills\//.test(path)) return "skill";
     return "markdown";
