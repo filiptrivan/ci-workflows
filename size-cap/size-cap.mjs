@@ -21,9 +21,7 @@
 // What is judged: every tracked text file, measured as its blob, at pre-commit the staged one,
 // never the working-tree file another session may be editing; unless the repo's `.gitattributes`
 // marks it `linguist-generated` or `linguist-vendored`, or git treats it as binary. No list of
-// extensions: one lets through every hand-written kind it forgets. A refusal prints the file's
-// size and cap, then only the recipe for its kind (see kindOf), then the footer; size-cap.test.mjs
-// pins their words.
+// extensions: one lets through every hand-written kind it forgets.
 //
 // The recipes name no repo's files, so every repo, a public one too, reads the same words. A repo
 // that writes down how a kind of file stays small says where in its own `.size-cap.json`, read
@@ -44,7 +42,7 @@
 // judges every line.
 
 import { spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const CAP_BYTES = 20_000;
@@ -53,25 +51,26 @@ const LIST = ".over-cap-list";
 const SETTINGS = ".size-cap.json";
 const CAP_MARK = "size-cap";
 
-const STALE_LINE = "on the Over-cap list but now under the cap (or deleted, or renamed): remove its line in this commit";
-const ADDED_LINE = "a line added to the Over-cap list: the list only shrinks; split the file instead";
-const BAD_MARK = `narrows nothing: a ${CAP_MARK} mark takes a whole number of bytes under 20,000, as ${CAP_MARK}=10000`;
+export const STALE_LINE = "on the Over-cap list but now under the cap (or deleted, or renamed): remove its line in this commit";
+export const ADDED_LINE = "a line added to the Over-cap list: the list only shrinks; split the file instead";
+export const BAD_MARK = `narrows nothing: a ${CAP_MARK} mark takes a whole number of bytes under 20,000, as ${CAP_MARK}=10000`;
 
-const SPLIT =
+export const SPLIT =
   "Split it before you commit, as its own commit, before your change. Split by design, never by\n" +
   "line count: each new file does one job behind a small interface and is named for that job.\n" +
   "A split that only spreads the same code over more files fails review.";
 
-const FOOTER =
+export const FOOTER =
   "If a script or tool writes this file, mark it `linguist-generated` in .gitattributes in this\n" +
   "same commit instead. --no-verify does not help: CI runs the same check on the push.";
 
-const RECIPES = {
+export const RECIPES = {
   code:
     "1. List the jobs this file does: groups of functions that call each other and share state,\n" +
     "   and seldom call the rest.\n" +
-    "2. Move each job into its own file, behind the smallest interface its callers need. The\n" +
-    "   original file keeps the entry point and composes them.\n" +
+    "2. Move each job into its own file, behind the smallest interface its callers need. Each\n" +
+    "   caller imports a name from the file that holds it. The original path stays only when it\n" +
+    "   does work behind a small interface, and no file re-exports (`export … from`).\n" +
     "3. C#: a class over the cap holds more than one responsibility. Extract a class (a policy,\n" +
     "   a calculator, a builder), never a `partial` class that only spreads one class over files.\n" +
     "4. Run the tests. Behavior does not change in this commit.",
@@ -387,4 +386,4 @@ function main(argv) {
   }
 }
 
-process.exitCode = main(process.argv.slice(2));
+if (process.argv[1] && realpathSync(process.argv[1]) === import.meta.filename) process.exitCode = main(process.argv.slice(2));
