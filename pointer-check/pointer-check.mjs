@@ -35,7 +35,8 @@
 //
 // The whole tree is scanned on every run, never a diff: a rename in one file strands a pointer
 // in another file the diff does not touch. --staged, a pre-commit hook's call, checks only the
-// files the index adds or changes, read from the hook's index before the run drops the git
+// files the index adds or changes, in a merge only those no parent holds
+// (own-changes/own-changes.mjs), read from the hook's index before the run drops the git
 // variables a hook hands it: every git call after runs as by hand, each sibling's in its own repo.
 //
 // The history lint, in a repo whose settings name its teammates, also fails a resident file (every
@@ -56,6 +57,8 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
+
+import { ownChanges } from "../own-changes/own-changes.mjs";
 
 const SNAPSHOT_HEADER = /^(>\s*)?Snapshot as of \d{4}-\d{2}-\d{2}\b/;
 
@@ -1203,7 +1206,9 @@ function main(argv) {
     } else only.push(argv[i].replace(/^\.\//, ""));
   }
   if (staged) {
-    const listed = execFileSync("git", ["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR"], { encoding: "utf8" }).split("\0").filter(Boolean);
+    // A or M: with renames off, a renamed or copied file's new path is an A.
+    const changes = ownChanges((args) => execFileSync("git", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 }));
+    const listed = [...changes].filter(([, letter]) => letter === "A" || letter === "M").map(([path]) => path);
     if (listed.length === 0) {
       process.stdout.write("pointer-check: no failing pointers (nothing staged)\n");
       return 0;

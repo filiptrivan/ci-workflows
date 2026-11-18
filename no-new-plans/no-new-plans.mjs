@@ -3,7 +3,8 @@
 // (umbrella ADR 0154). The plans a repo already holds stay, and may still be edited or split.
 //
 //   node no-new-plans.mjs --staged         a pre-commit hook's call: the files the commit adds, and
-//                                          the staged list against HEAD's
+//                                          the staged list against HEAD's; in a merge, only what no
+//                                          parent holds (own-changes/own-changes.mjs)
 //   node no-new-plans.mjs [--base <ref>]   CI's call: every file HEAD tracks under docs/plans/, and
 //                                          its list against <ref>'s, a pull request's base or a
 //                                          push's previous tip
@@ -17,6 +18,8 @@
 // no list holds no allowed plan, except the commit that installs it, whose base has none to compare.
 
 import { spawnSync } from "node:child_process";
+
+import { ownChanges, parentLines, stagedParents } from "../own-changes/own-changes.mjs";
 
 const LIST = ".plans-list";
 const PLANS = "docs/plans/";
@@ -59,8 +62,9 @@ function judge(paths, list, baseList) {
 
 function refusalsOf(args) {
   if (args[0] === "--staged") {
-    const added = lines(mustGit("diff", "--cached", "--name-only", "--no-renames", "--diff-filter=A", "--", PLANS));
-    return judge(added, listAt(""), listAt("HEAD"));
+    const run = (gitArgs) => mustGit(...gitArgs);
+    const added = [...ownChanges(run, [PLANS])].filter(([, letter]) => letter === "A").map(([path]) => path);
+    return judge(added, listAt(""), parentLines(stagedParents(run), listAt));
   }
   let baseList = null;
   if (args[0] === "--base") {

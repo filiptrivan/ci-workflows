@@ -9,7 +9,8 @@
 // mark raises the cap.
 //
 //   node size-cap.mjs --staged         a pre-commit hook's call: the files the commit adds or
-//                                      modifies, and the staged list against HEAD's
+//                                      modifies, and the staged list against HEAD's; in a merge,
+//                                      only what no parent holds (own-changes/own-changes.mjs)
 //   node size-cap.mjs [--base <ref>]   CI's call: every file HEAD tracks, and its list against
 //                                      <ref>'s, a pull request's base or a push's previous tip
 //   node size-cap.mjs --write-list     writes the list from the staged tree, as the commit that
@@ -46,9 +47,11 @@ import { realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { ownChanges, parentLines, stagedParents } from "../own-changes/own-changes.mjs";
+
 const CAP_BYTES = 20_000;
 const LIST = ".over-cap-list";
-// Plain JSON, never JSONC: a caller's test harness copies this file alone, so it imports no parser.
+// Plain JSON, never JSONC: a caller's test harness copies only this file and own-changes.mjs.
 const SETTINGS = ".size-cap.json";
 const CAP_MARK = "size-cap";
 
@@ -311,18 +314,17 @@ function refusalsOf({ big, judged, badMarks }, guides, list, before, judgesLine)
 
 /**
  * A pre-commit hook's call: the files the commit adds or modifies, and each whose line it removes
- * from the list; the staged list's added lines against HEAD's, and its lines whose files the
+ * from the list; the staged list's added lines against its parents', and its lines whose files the
  * commit touches.
  */
 function stagedRefusals() {
-  const head = lastListAt("HEAD");
+  const run = (args) => git(args).toString("utf8");
+  const before = parentLines(stagedParents(run), lastListAt);
   const list = listAt("") ?? new Set();
-  const diff = (...filter) => new Set(nulSeparated(git(["diff", "--cached", "--name-only", "-z", "--no-renames", ...filter])));
-  const touched = diff();
-  const addedOrModified = diff("--diff-filter=AMT");
-  const unlisted = new Set([...(head ?? [])].filter((path) => !list.has(path)));
-  const files = stagedFiles().filter((file) => addedOrModified.has(file.path) || unlisted.has(file.path));
-  return { refusals: refusalsOf(overCap(files, ["--cached"]), guidesAt(""), list, head, (path) => touched.has(path)), judged: files.length };
+  const touched = ownChanges(run);
+  const unlisted = new Set([...(before ?? [])].filter((path) => !list.has(path)));
+  const files = stagedFiles().filter((file) => /^[AMT]$/.test(touched.get(file.path)) || unlisted.has(file.path));
+  return { refusals: refusalsOf(overCap(files, ["--cached"]), guidesAt(""), list, before, (path) => touched.has(path)), judged: files.length };
 }
 
 /** CI's call: every file HEAD tracks and every line of its list, the list against `base`'s when given. */
