@@ -1,6 +1,7 @@
-// Pins what the three checks judge in a merge commit, at each one's `--staged` CLI as a pre-commit
-// hook runs it: each test builds a real git repo stopped in a conflicted merge, its conflict resolved
-// and staged, and asserts only the exit code and the printed text (pacms-workspace#1752).
+// Pins what the three checks judge in a merge commit. Each test runs one check's `--staged` CLI, as
+// a pre-commit hook runs it. Its repo is a real git repo, stopped in a conflicted merge whose
+// conflict is resolved and staged. A test asserts only the exit code and the printed text
+// (pacms-workspace#1752, a merge commit's checks judge only what neither parent holds).
 //
 //   node --test own-changes/own-changes.test.mjs
 

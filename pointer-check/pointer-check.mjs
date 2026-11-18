@@ -35,7 +35,7 @@
 //
 // The whole tree is scanned on every run, never a diff: a rename in one file strands a pointer
 // in another file the diff does not touch. --staged, a pre-commit hook's call, checks only the
-// files the index adds or changes, in a merge only those no parent holds
+// files the index adds or changes, in a merge only its own changes
 // (own-changes/own-changes.mjs), read from the hook's index before the run drops the git
 // variables a hook hands it: every git call after runs as by hand, each sibling's in its own repo.
 //

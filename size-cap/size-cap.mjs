@@ -10,7 +10,7 @@
 //
 //   node size-cap.mjs --staged         a pre-commit hook's call: the files the commit adds or
 //                                      modifies, and the staged list against HEAD's; in a merge,
-//                                      only what no parent holds (own-changes/own-changes.mjs)
+//                                      only its own changes (own-changes/own-changes.mjs)
 //   node size-cap.mjs [--base <ref>]   CI's call: every file HEAD tracks, and its list against
 //                                      <ref>'s, a pull request's base or a push's previous tip
 //   node size-cap.mjs --write-list     writes the list from the staged tree, as the commit that
@@ -47,11 +47,12 @@ import { realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { ownChanges, parentLines, stagedParents } from "../own-changes/own-changes.mjs";
+import { ownChanges, parentLines } from "../own-changes/own-changes.mjs";
 
 const CAP_BYTES = 20_000;
 const LIST = ".over-cap-list";
-// Plain JSON, never JSONC: a caller's test harness copies only this file and own-changes.mjs.
+// Plain JSON, never JSONC: a caller's test harness copies this file and its relative imports only,
+// so it imports no parser.
 const SETTINGS = ".size-cap.json";
 const CAP_MARK = "size-cap";
 
@@ -319,7 +320,7 @@ function refusalsOf({ big, judged, badMarks }, guides, list, before, judgesLine)
  */
 function stagedRefusals() {
   const run = (args) => git(args).toString("utf8");
-  const before = parentLines(stagedParents(run), lastListAt);
+  const before = parentLines(run, lastListAt);
   const list = listAt("") ?? new Set();
   const touched = ownChanges(run);
   const unlisted = new Set([...(before ?? [])].filter((path) => !list.has(path)));

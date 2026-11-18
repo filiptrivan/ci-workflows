@@ -17,7 +17,7 @@ index c95e7f9..abd73b4 100644
        - run: node --test no-new-plans/no-new-plans.test.mjs
  
 +  own-changes-tests:
-+    name: merge commit tests
++    name: own changes tests
 +    # ubuntu-slim, since the job is thin; workflow-policy/slim-jobs.test.mjs holds it to slim's limits.
 +    runs-on: ubuntu-slim
 +    timeout-minutes: 5
