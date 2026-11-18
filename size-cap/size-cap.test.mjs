@@ -1,7 +1,7 @@
 // Pins the Size cap at its CLI, run as a pre-commit hook (`--staged`) and CI (whole-tree mode) run
 // it: each test builds a real git repo in a temp folder and asserts only the exit code and the
-// printed text. Its builders: size-cap.fixtures.mjs. A test compares each refusal with the texts
-// size-cap.mjs exports, so it copies none of the check's words.
+// printed text. Its builders: size-cap.fixtures.mjs. A test imports each text size-cap.mjs exports,
+// and copies none of them.
 //
 //   node --test size-cap/size-cap.test.mjs
 
@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import { ADDED, commit, git, LISTED, repo, run, sizeLines, stage, text } from "./size-cap.fixtures.mjs";
-import { BAD_MARK, FOOTER, RECIPES, SPLIT } from "./size-cap.mjs";
+import { BAD_MARK, FOOTER, RECIPES, SETTINGS_SHAPE, SPLIT } from "./size-cap.mjs";
 
 /* ------------------------------------------------------------------------- what is refused */
 
@@ -164,9 +164,7 @@ test("a repo's .size-cap.json guide prints under its kind's recipe, read from th
 });
 
 test("a .size-cap.json the check cannot read stops it with exit 2, never a pass", () => {
-  const shape =
-    'size cap: .size-cap.json holds { "guides": { "<kind>": "<where this repo says how such a file stays small>" } }, ' +
-    "each kind one of code, test, template, markdown, glossary, skill, resident, data\n";
+  const shape = `size cap: .size-cap.json holds ${SETTINGS_SHAPE}, each kind one of code, test, template, markdown, glossary, skill, resident, data\n`;
   for (const settings of ['{ "guides": { "residnet": "a.md" } }', '{ "guides": { "resident": 1 } }', '{ "guide": {} }', '{ "guides": null }', "[]"]) {
     assert.deepEqual(run(repo({}, { ".size-cap.json": settings }), "--staged"), { status: 2, out: shape }, settings);
   }

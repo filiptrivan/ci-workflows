@@ -44,6 +44,7 @@
 import { spawnSync } from "node:child_process";
 import { realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const CAP_BYTES = 20_000;
 const LIST = ".over-cap-list";
@@ -54,6 +55,7 @@ const CAP_MARK = "size-cap";
 export const STALE_LINE = "on the Over-cap list but now under the cap (or deleted, or renamed): remove its line in this commit";
 export const ADDED_LINE = "a line added to the Over-cap list: the list only shrinks; split the file instead";
 export const BAD_MARK = `narrows nothing: a ${CAP_MARK} mark takes a whole number of bytes under 20,000, as ${CAP_MARK}=10000`;
+export const SETTINGS_SHAPE = '{ "guides": { "<kind>": "<where this repo says how such a file stays small>" } }';
 
 export const SPLIT =
   "Split it before you commit, as its own commit, before your change. Split by design, never by\n" +
@@ -260,8 +262,7 @@ function guidesAt(treeish) {
   const guides = isObject(settings) && "guides" in settings ? settings.guides : {};
   const isGuide = ([kind, guide]) => Object.hasOwn(RECIPES, kind) && typeof guide === "string" && guide !== "";
   if (!isObject(settings) || Object.keys(settings).some((key) => key !== "guides") || !isObject(guides) || !Object.entries(guides).every(isGuide)) {
-    const shape = '{ "guides": { "<kind>": "<where this repo says how such a file stays small>" } }';
-    throw new CannotRun(`${SETTINGS} holds ${shape}, each kind one of ${Object.keys(RECIPES).join(", ")}`);
+    throw new CannotRun(`${SETTINGS} holds ${SETTINGS_SHAPE}, each kind one of ${Object.keys(RECIPES).join(", ")}`);
   }
   return guides;
 }
@@ -386,4 +387,4 @@ function main(argv) {
   }
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === import.meta.filename) process.exitCode = main(process.argv.slice(2));
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) process.exitCode = main(process.argv.slice(2));

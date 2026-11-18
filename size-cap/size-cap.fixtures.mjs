@@ -1,5 +1,5 @@
 // The builders of size-cap.test.mjs: a git repo in a temp folder, the CLI run in it, each refusal's
-// first line. A line takes its words from size-cap.mjs's exports, so no test copies them.
+// first line.
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
