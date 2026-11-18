@@ -1,0 +1,19 @@
+{
+  "checks": [
+    {
+      "name": "pointer check tests",
+      "command": "node --test pointer-check/*.test.mjs",
+      "ci": ["pointer check tests"]
+    },
+    {
+      "name": "workflow policy tests",
+      "command": "node --test workflow-policy/*.test.mjs",
+      "ci": ["workflow policy tests"]
+    },
+    {
+      "name": "size cap",
+      "command": "node size-cap/size-cap.mjs --base origin/main",
+      "ci": ["size-cap / size cap"]
+    }
+  ]
+}
