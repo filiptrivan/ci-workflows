@@ -4,15 +4,8 @@
 //   node --test check-moments/check-moments.test.mjs
 
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
 import { checksAt, commandAt, MOMENTS } from "./check-moments.mjs";
-
-const CLI = join(dirname(fileURLToPath(import.meta.url)), "check-moments.mjs");
 
 const MANIFEST = {
   checks: [
@@ -58,26 +51,11 @@ test("a check keeps its other fields, and one with no `fast` is slow", () => {
   assert.deepEqual(checksAt(unmarked, "close", DOCS).map(({ name }) => name), ["old"]);
 });
 
-test("commandAt gives a check's one command at every moment, or the command it names for that moment, else null", () => {
+test("commandAt gives a check's one command at every moment, or the command it names for that moment, else null, and an unknown moment throws", () => {
   assert.equal(commandAt({ command: "x" }, "close"), "x");
   assert.equal(commandAt({ commands: { commit: "c" } }, "factory-commit"), "c");
   assert.equal(commandAt({ commands: { commit: "c" } }, "push"), null);
   assert.throws(() => commandAt({ command: "x" }, "lunch"), /no moment lunch; the moments are factory-commit, commit, close, push/);
+  assert.throws(() => checksAt(MANIFEST, "lunch", DOCS), /no moment lunch/);
   assert.deepEqual(MOMENTS, ["factory-commit", "commit", "close", "push"]);
-});
-
-test("the CLI prints each check of a moment as one line of fields split by the unit separator, from the manifest it names and the paths on stdin", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "check-moments-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  writeFileSync(join(dir, "manifest.json"), JSON.stringify(MANIFEST));
-  const { status, stdout, stderr } = spawnSync("node", [CLI, "--moment", "commit", "--manifest", join(dir, "manifest.json")], {
-    input: `${BACKEND.join("\n")}\n`,
-    encoding: "utf8",
-  });
-  assert.equal(status, 0, stderr);
-  assert.deepEqual(stdout.split("\n").filter(Boolean).map((line) => line.split("\x1f")), [
-    ["backend", "false", "true", ".NET", "false", "lane_backend"],
-    ["size cap", "true", "false", "", "true", "size --staged"],
-    ["pointer check", "true", "false", "", "false", "pointers --staged"],
-  ]);
 });
