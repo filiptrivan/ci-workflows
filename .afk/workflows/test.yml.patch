@@ -7,7 +7,7 @@ index c95e7f9..de68d88 100644
          with:
            node-version-file: .nvmrc
 -      - run: node --test pointer-check/pointer-check.test.mjs
-+      - run: node --test pointer-check/pointer-check.test.mjs pointer-check/file-and-name.test.mjs
++      - run: node --test pointer-check/*.test.mjs
  
    size-cap-tests:
      name: size cap tests

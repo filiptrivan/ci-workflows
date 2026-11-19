@@ -1,35 +1,39 @@
-// The file-and-name pointer, the pointer check's sixth form: prose names a file and a name together,
-// in one of two shapes, read from a comment or a Markdown paragraph and wrapped over two lines at most:
+// The file-and-name pointer is the pointer check's sixth form. Prose names a file and a name
+// together, in a comment or a Markdown paragraph, wrapped over two lines at most. It has two shapes:
 //
 //   the file, then the backticked name    prepare.mjs `runPrePushChecks`, prepare.mjs's `terraform`,
 //                                         `scripts/agent-box/whats-waiting.mjs` `MINE`
 //   the backticked name, "in" or "at",    `variantPlaceholderByKind` in @pa/shared/dictionary/base.ts
 //   then the file
 //
-// A split often keeps the old file as an entry that composes its parts, so the old path still
-// resolves as a file pointer and only the name went stale. The name is judged by the file's own
-// declarations and imports, never by a match anywhere in the tree: a detector that accepts a name
-// found anywhere misses a name that moved while its old file stays (Ratol and Robillard, "Detecting
-// fragile comments", ASE 2017, read the code's scope for this reason). In this order, code and
-// strings counting and a comment never:
+// A split often keeps the old file as an entry that composes its parts. The old path then still
+// resolves as a file pointer, and only the name is stale. So the form judges the name by the
+// file's own declarations and imports, never by a match anywhere in the tree. A detector that
+// accepts a name found anywhere misses a name that moved while its old file stays (Ratol and
+// Robillard, "Detecting fragile comments", ASE 2017, read the code's scope for this reason).
+// Code and strings count, and a comment never does. The steps go in this order:
 //
-//   1. the file declares or exports the name, a re-export included: it resolves;
-//   2. the file imports the name under that same name: it fails, naming the import's file, even when
-//      the file also calls it (an aliased import, `{ a as b }`, imports neither name);
-//   3. the file uses the name in its code or strings: it resolves;
-//   4. exactly one other tracked code file declares the name: it fails, naming that file. None or
-//      several: skipped, as a name many files declare (`args`, `at`) gives no home to name.
-//      In JavaScript, TypeScript or an HTML page's script only an export or a top-level
-//      declaration counts: a local `const at` or `args` inside a function is no home of a name
-//      prose points at.
+//   1. The file declares or exports the name, a re-export included: it resolves.
+//   2. The file imports the name under that same name: it fails, naming the import's file. This
+//      holds also when the file calls the name. An aliased import (`{ a as b }`) imports neither.
+//   3. The file uses the name in its code or strings: it resolves.
+//   4. Exactly one other tracked code file declares the name: it fails, naming that file. When
+//      none or several do, the form skips it: a name many files declare (`args`) has no one home.
+//      In JavaScript and TypeScript, only an export or a declaration that opens its line counts,
+//      and in an HTML page's script only the latter, so a function's local `const at` is no home.
 //
-// Not a file-and-name pointer: an arrow between the two (`server.ts` → `cachedFetch` names a call
-// path), "(" or "from" between them (a parameter's type, where a value comes from), and a pointer
-// right after "out of" (a history note: "Moved out of prepare.mjs's `terraform` row").
+// These are not file-and-name pointers:
+//   - an arrow between the two: `server.ts` → `cachedFetch` names a call path;
+//   - "(" or "from" between them: they give a parameter's type or where a value comes from;
+//   - a pointer right after "out of", on its line or the line before: "Moved out of prepare.mjs's
+//     `terraform` row" is a history note.
 //
-// A failing one is printed and fails nothing, until the repo's `.pointer-check.jsonc` sets
-// `"failFileAndNamePointers": true`: CI in every repo runs ci-workflows' main at once, so a default
-// here would fail each repo before its own fixes are pushed.
+// A failing one is printed and fails nothing. A repo's `.pointer-check.jsonc` makes it fail with
+// `"failFileAndNamePointers": true`. CI in every repo runs the main branch of these workflows at
+// once, so a default here would fail each repo before its own fixes are pushed.
+//
+// IDENTIFIER, MODULE_SUFFIXES and readText are copies of the ones in pointer-check.mjs, because
+// that file runs its CLI when it is imported.
 
 import { readFileSync, statSync } from "node:fs";
 import { join, posix } from "node:path";
@@ -50,11 +54,12 @@ const MODULE_SUFFIXES = ["ts", "tsx", "mts", "js", "jsx", "mjs", "cjs"].flatMap(
 ]);
 const MAX_REEXPORT_DEPTH = 5;
 
-// Every file-and-name pointer that starts within the first `length` characters of `wrapped`, the
-// prose line joined with the line after it, so a wrapped pointer is read whole and reported once,
-// at its first line. Each is a pointer as pointersIn returns it, whose resolve() also sets its
-// `refusal`, the message a failure prints.
-export function fileAndNamePointers(wrapped, length, { repo, file, languageOf, declaration }) {
+// The file-and-name pointers of one prose line. `wrapped` is the line joined with the next line,
+// and `lineLength` is the length of the line alone. Only a pointer that starts on the line is
+// returned, so a wrapped pointer is read whole and reported once, at its first line. `previous` is
+// the line before. Each pointer has the shape that pointersIn returns. Its resolve() also sets its
+// `refusal`, the message that a failure prints.
+export function fileAndNamePointers(wrapped, lineLength, { previous = "", repo, file, languageOf, declaration }) {
   const spans = [...wrapped.matchAll(SPAN)].map((match) => ({
     start: match.index,
     end: match.index + match[0].length,
@@ -64,13 +69,17 @@ export function fileAndNamePointers(wrapped, length, { repo, file, languageOf, d
   spans.forEach((span, index) => {
     const name = NAME_SPAN.exec(span.content)?.[1];
     if (!name) return;
-    const previous = spans[index - 1];
-    const next = spans[index + 1];
-    const found = fileBefore(wrapped, span, previous) ?? fileAfter(wrapped, span, next);
-    if (!found || found.start >= length || OUT_OF.test(wrapped.slice(0, found.start))) return;
-    pointers.push(pointer(found, name, { repo, file, languageOf, declaration }));
+    const pair = fileBefore(wrapped, span, spans[index - 1]) ?? fileAfter(wrapped, span, spans[index + 1]);
+    if (!pair || pair.start >= lineLength || afterOutOf(wrapped.slice(0, pair.start), previous)) return;
+    pointers.push(fileAndNamePointer(pair, name, { repo, file, languageOf, declaration }));
   });
   return pointers;
+}
+
+// "out of" just before the pointer, or at the end of the line before when only a comment's
+// decoration (`// `, ` * `) comes before the pointer on its own line.
+function afterOutOf(before, previous) {
+  return OUT_OF.test(before) || (/^[\s*#/>]*$/.test(before) && OUT_OF.test(previous));
 }
 
 // `prepare.mjs `name``, `prepare.mjs's `name``, or a backticked file before the backticked name.
@@ -95,14 +104,14 @@ function fileAfter(wrapped, span, next) {
   return bare ? { start: span.start, path: bare[1], display: bare[1] } : undefined;
 }
 
-function pointer(found, name, { repo, file, languageOf, declaration }) {
-  const display = `${found.display} \`${name}\``;
+function fileAndNamePointer(pair, name, { repo, file, languageOf, declaration }) {
+  const display = `${pair.display} \`${name}\``;
   const result = {
-    column: found.start,
+    column: pair.start,
     display,
     reportOnly: repo.config.failFileAndNamePointers !== true,
     resolve: () => {
-      const located = locate(found.path, { repo, file });
+      const located = locate(pair.path, { repo, file });
       if (!located || !languageOf(located.path)?.names) return undefined;
       const verdict = judge(located.owner, located.path, name, { languageOf, declaration });
       if (verdict?.message) result.refusal = `${display}: ${verdict.message}`;
@@ -112,9 +121,9 @@ function pointer(found, name, { repo, file, languageOf, declaration }) {
   return result;
 }
 
-// The checkout and path a written file lands on, or undefined when it lands on none for sure:
-// a sibling's file is read in that sibling, a workspace package's name maps through its
-// `package.json`, and a name several files share takes the one nearest the commenting file.
+// The checkout and path that a written file lands on, or undefined when it lands on no one file.
+// A sibling's file is read in that sibling. A workspace package's name maps through its
+// `package.json`. A file name that several files share takes the one nearest the commenting file.
 function locate(written, { repo, file }) {
   let path = written.replace(/:\d+(-\d+)?$/, "");
   const own = repo.config.self.find((name) => path.startsWith(`${name}/`));

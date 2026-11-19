@@ -164,6 +164,8 @@ test("an arrow, a parenthesis, a from, or out of before the pair is not a file-a
       "// A call runs `server.ts` → `cachedFetch`, and part.mjs → `held` names a member.",
       "// It takes `home` (layout.mjs `cronStartsFile`) and `storefrontDeployEnv`, from ship-storefront.mjs.",
       "// Moved 2026-10-28 out of prepare.mjs's `terraform` row.",
+      "// The row moved out of",
+      "// prepare.mjs `terraform` on the same day.",
       "export const notes = 1;",
       "",
     ].join("\n"),

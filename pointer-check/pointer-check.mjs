@@ -33,8 +33,8 @@
 //                     --siblings-beside reads them beside <checkout> instead, for a copy of it
 //                     (a throwaway worktree at a pinned commit, whose own `..` holds no sibling)
 //   a file and a name  prepare.mjs `runPrePushChecks`, `name` in @pa/shared/x.ts; resolves when
-//                     the file declares, exports or uses the name, report-only until the repo's
-//                     settings turn it on (file-and-name.mjs)
+//                     the file declares, exports or uses the name (file-and-name.mjs). It is
+//                     report-only until the repo's settings turn it on
 //
 // The whole tree is scanned on every run, never a diff: a rename in one file strands a pointer
 // in another file the diff does not touch. --staged, a pre-commit hook's call, checks only the
@@ -777,7 +777,7 @@ function pointersIn(text, { repo, file, kind, previous = "", next = "" }) {
     }
   }
 
-  pointers.push(...fileAndNamePointers(wrapped, text.length, { repo, file, languageOf, declaration: DECLARATION }));
+  pointers.push(...fileAndNamePointers(wrapped, text.length, { previous, repo, file, languageOf, declaration: DECLARATION }));
   return pointers;
 }
 
