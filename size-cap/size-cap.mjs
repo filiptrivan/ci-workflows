@@ -9,7 +9,8 @@
 // mark raises the cap.
 //
 //   node size-cap.mjs --staged         a pre-commit hook's call: the files the commit adds or
-//                                      modifies, and the staged list against HEAD's
+//                                      modifies, and the staged list against HEAD's; in a merge,
+//                                      only its own changes (own-changes/own-changes.mjs)
 //   node size-cap.mjs [--base <ref>]   CI's call: every file HEAD tracks, and its list against
 //                                      <ref>'s, a pull request's base or a push's previous tip
 //   node size-cap.mjs --write-list     writes the list from the staged tree, as the commit that
@@ -23,7 +24,7 @@
 // marks it `linguist-generated` or `linguist-vendored`, or git treats it as binary. No list of
 // extensions: one lets through every hand-written kind it forgets.
 //
-// The recipes name no repo's files, so every repo, a public one too, reads the same words. A repo
+// A refusal's text and its recipes: size-refusal.mjs. The recipes name no repo's files. A repo
 // that writes down how a kind of file stays small says where in its own `.size-cap.json`, read
 // from the judged tree as the Over-cap list is: `{ "guides": { "resident": "docs/rules.md" } }`
 // prints "This repo's guide: docs/rules.md." under each resident file's recipe. A kind it does not
@@ -46,9 +47,13 @@ import { realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { ownChanges, parentLines } from "../own-changes/own-changes.mjs";
+import { RECIPES, sizeRefusal } from "./size-refusal.mjs";
+
 const CAP_BYTES = 20_000;
 const LIST = ".over-cap-list";
-// Plain JSON, never JSONC: a caller's test harness copies this file alone, so it imports no parser.
+// Plain JSON, never JSONC: a caller's test harness copies this file and its relative imports only,
+// so it imports no parser.
 const SETTINGS = ".size-cap.json";
 const CAP_MARK = "size-cap";
 
@@ -56,67 +61,6 @@ export const STALE_LINE = "on the Over-cap list but now under the cap (or delete
 export const ADDED_LINE = "a line added to the Over-cap list: the list only shrinks; split the file instead";
 export const BAD_MARK = `narrows nothing: a ${CAP_MARK} mark takes a whole number of bytes under 20,000, as ${CAP_MARK}=10000`;
 export const SETTINGS_SHAPE = '{ "guides": { "<kind>": "<where this repo says how such a file stays small>" } }';
-
-export const SPLIT =
-  "Split it before you commit, as its own commit, before your change. Split by design, never by\n" +
-  "line count: each new file does one job behind a small interface and is named for that job.\n" +
-  "A split that only spreads the same code over more files fails review.";
-
-export const FOOTER =
-  "If a script or tool writes this file, mark it `linguist-generated` in .gitattributes in this\n" +
-  "same commit instead. --no-verify does not help: CI runs the same check on the push.";
-
-export const RECIPES = {
-  code:
-    "1. List the jobs this file does: groups of functions that call each other and share state,\n" +
-    "   and seldom call the rest.\n" +
-    "2. Move each job into its own file, behind the smallest interface its callers need. Each\n" +
-    "   caller imports a name from the file that holds it. The original path stays only when it\n" +
-    "   does work behind a small interface, and no file re-exports (`export … from`).\n" +
-    "3. C#: a class over the cap holds more than one responsibility. Extract a class (a policy,\n" +
-    "   a calculator, a builder), never a `partial` class that only spreads one class over files.\n" +
-    "4. Run the tests. Behavior does not change in this commit.",
-  test:
-    "Split with the code under test: one test file per module. If the module stays whole, split by\n" +
-    "behavior, one file per top-level describe, and move the shared fixtures and builders into\n" +
-    "<name>.fixtures.<ext>.",
-  template: "Extract a child component for each panel or repeated block, with inputs and outputs.",
-  markdown:
-    "Keep <name>.md at its path as the index. Move each ## section word for word into <name>/.\n" +
-    "The index is a table whose first cell is each moved section's old heading, so every\n" +
-    "`<name>.md → \"Section\"` pointer still resolves. Lose nothing; reword nothing.",
-  glossary: "Split the group by kind of work into two groups, and update the index lines that name them.",
-  skill:
-    "Move a branch beyond the core steps into a sibling file in the skill's folder, behind a\n" +
-    "pointer that names the branch.",
-  resident:
-    "Starting with the lines you added, keep only what most sessions that load this file need. Move\n" +
-    "each other line to the doc or skill where its reader looks, leaving at most a one-line pointer.",
-  data: "Split by concern: a workflow per group of jobs, translations per feature, alert rules per area.",
-};
-
-/**
- * Which recipe a file takes, read from its path. Among Markdown, a resident file first, since a
- * directory-scoped `CLAUDE.md` sits in `.claude/skills/` too. A rule file under `.claude/rules/` is
- * resident: Claude Code loads every `.md` file there, in a subfolder too
- * (code.claude.com/docs/en/memory, read 2026-11-14). So the split recipe would only add files that
- * load. Only a skill's Markdown takes the skill's recipe, which moves a branch of prose; its
- * scripts and data take their own kind's (on 2026-11-04 three over-cap files in skill folders were
- * Python scripts).
- */
-function kindOf(path) {
-  const name = path.slice(path.lastIndexOf("/") + 1);
-  if (/\.(test|spec)\./.test(name) || name.endsWith("Tests.cs")) return "test";
-  if (name.endsWith(".component.html")) return "template";
-  if (/\.mdx?$/.test(name)) {
-    if (name === "CLAUDE.md" || name === "AGENTS.md" || /(^|\/)\.claude\/rules\//.test(path)) return "resident";
-    if (path.startsWith("glossary/")) return "glossary";
-    if (/(^|\/)\.claude\/skills\//.test(path)) return "skill";
-    return "markdown";
-  }
-  if (/\.(ya?ml|jsonc?)$/.test(name)) return "data";
-  return "code";
-}
 
 // git's own test for binary content, buffer_is_binary(): a NUL in the first 8,000 bytes.
 const BINARY_PROBE_BYTES = 8_000;
@@ -227,7 +171,7 @@ function overCap(files, attributeSource) {
     const narrowed = narrows(mark);
     if (!narrowed && mark !== "unspecified" && mark !== "unset") badMarks.push({ path: file.path, mark });
     const cap = narrowed ? Number(mark) : CAP_BYTES;
-    if (file.bytes > cap) big.push({ ...file, cap });
+    if (file.bytes > cap) big.push({ ...file, cap, ...(narrowed && { narrowedBy: CAP_MARK }) });
   }
   return { big: new Set(big.map((file) => file.path)), judged: judgedFiles(big, marks), badMarks };
 }
@@ -275,23 +219,6 @@ function lastListAt(ref) {
   return deleting ? listAt(`${deleting}^`) : null;
 }
 
-const grouped = (number) => String(number).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-
-const tokens = (bytes) => `${grouped(Math.ceil(bytes / 4))} tokens`;
-
-/**
- * The refusal of a file over its cap: its size and cap, then the recipe for its kind and the repo's
- * guide for that kind from `guides`, then the footer. A resident file is cut line by line, so it
- * takes no split.
- */
-function sizeRefusal({ path, bytes, cap }, guides) {
-  const limit = `${tokens(cap)} (${grouped(cap)} bytes)`;
-  const capIs = cap === CAP_BYTES ? `The cap is ${limit}.` : `Its cap is ${limit}, narrowed by its ${CAP_MARK} mark in .gitattributes.`;
-  const kind = kindOf(path);
-  const advice = [kind === "resident" ? RECIPES.resident : `${SPLIT}\n\n${RECIPES[kind]}`];
-  if (guides[kind]) advice.push(`This repo's guide: ${guides[kind]}.`);
-  return `size cap: ${path} is ${grouped(bytes)} bytes = ${tokens(bytes)} (bytes/4). ${capIs}\n\n${advice.join("\n\n")}\n\n${FOOTER}\n`;
-}
 
 /**
  * Every refusal, sorted by path: each `judged` file `list` lacks, with its kind's guide from
@@ -311,18 +238,17 @@ function refusalsOf({ big, judged, badMarks }, guides, list, before, judgesLine)
 
 /**
  * A pre-commit hook's call: the files the commit adds or modifies, and each whose line it removes
- * from the list; the staged list's added lines against HEAD's, and its lines whose files the
+ * from the list; the staged list's added lines against its parents', and its lines whose files the
  * commit touches.
  */
 function stagedRefusals() {
-  const head = lastListAt("HEAD");
+  const run = (args) => git(args).toString("utf8");
+  const before = parentLines(run, lastListAt);
   const list = listAt("") ?? new Set();
-  const diff = (...filter) => new Set(nulSeparated(git(["diff", "--cached", "--name-only", "-z", "--no-renames", ...filter])));
-  const touched = diff();
-  const addedOrModified = diff("--diff-filter=AMT");
-  const unlisted = new Set([...(head ?? [])].filter((path) => !list.has(path)));
-  const files = stagedFiles().filter((file) => addedOrModified.has(file.path) || unlisted.has(file.path));
-  return { refusals: refusalsOf(overCap(files, ["--cached"]), guidesAt(""), list, head, (path) => touched.has(path)), judged: files.length };
+  const touched = ownChanges(run);
+  const unlisted = new Set([...(before ?? [])].filter((path) => !list.has(path)));
+  const files = stagedFiles().filter((file) => /^[AMT]$/.test(touched.get(file.path)) || unlisted.has(file.path));
+  return { refusals: refusalsOf(overCap(files, ["--cached"]), guidesAt(""), list, before, (path) => touched.has(path)), judged: files.length };
 }
 
 /** CI's call: every file HEAD tracks and every line of its list, the list against `base`'s when given. */
