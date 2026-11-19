@@ -1,7 +1,7 @@
 // Pins the Size cap at its CLI, run as a pre-commit hook (`--staged`) and CI (whole-tree mode) run
 // it: each test builds a real git repo in a temp folder and asserts only the exit code and the
-// printed text. Its builders: size-cap.fixtures.mjs. A test imports each text size-cap.mjs exports,
-// and copies none of them.
+// printed text. Its builders: size-cap.fixtures.mjs. A test imports each text that size-cap.mjs and
+// size-refusal.mjs export, and copies none of them.
 //
 //   node --test size-cap/size-cap.test.mjs
 
@@ -12,7 +12,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import { ADDED, commit, git, LISTED, repo, run, sizeLines, stage, text } from "./size-cap.fixtures.mjs";
-import { BAD_MARK, FOOTER, RECIPES, SETTINGS_SHAPE, SPLIT } from "./size-cap.mjs";
+import { BAD_MARK, SETTINGS_SHAPE } from "./size-cap.mjs";
+import { FOOTER, RECIPES, SPLIT } from "./size-refusal.mjs";
 
 /* ------------------------------------------------------------------------- what is refused */
 
