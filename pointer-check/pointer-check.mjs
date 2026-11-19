@@ -6,7 +6,7 @@
 //
 // Prose is every Markdown file, every comment in a code file and each guide in a root
 // `.size-cap.json` (sizeCapGuides), minus the exempt set. A pointer
-// is one of five explicit forms; anything else, a bare backticked word above all, is never one,
+// is one of six explicit forms; anything else, a bare backticked word above all, is never one,
 // because a missed pointer costs less than a false failure that teaches people to ignore the check:
 //
 //   a file path       `apps/rs/next.config.ts`, `scripts/evals/`, a relative Markdown link;
@@ -32,6 +32,9 @@
 //                     this one, skipped when it is not, so a lone clone's CI never fails on it;
 //                     --siblings-beside reads them beside <checkout> instead, for a copy of it
 //                     (a throwaway worktree at a pinned commit, whose own `..` holds no sibling)
+//   a file and a name  prepare.mjs `runPrePushChecks`, `name` in @pa/shared/x.ts; resolves when
+//                     the file declares, exports or uses the name, report-only until the repo's
+//                     settings turn it on (file-and-name.mjs)
 //
 // The whole tree is scanned on every run, never a diff: a rename in one file strands a pointer
 // in another file the diff does not touch. --staged, a pre-commit hook's call, checks only the
@@ -50,12 +53,14 @@
 //     "exempt": ["path/prefix/", "glob/**/*.md", "!re/included.md"],  // last match wins
 //     "siblings": { "name": ["../name", "name"] },  // present when a path holds a `.git`
 //     "self": ["name"],                              // this repo's own names, as a prefix
-//     "historyLint": { "teammates": ["Name"] }      // absent: no history lint
+//     "historyLint": { "teammates": ["Name"] },     // absent: no history lint
+//     "failFileAndNamePointers": true                // absent: a file and a name is report-only
 //   }
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
+import { fileAndNamePointers } from "./file-and-name.mjs";
 
 const SNAPSHOT_HEADER = /^(>\s*)?Snapshot as of \d{4}-\d{2}-\d{2}\b/;
 
@@ -248,6 +253,7 @@ class Repo {
       siblings: config.siblings ?? {},
       self: config.self ?? [],
       historyLint: config.historyLint,
+      failFileAndNamePointers: config.failFileAndNamePointers,
     };
   }
 
@@ -771,6 +777,7 @@ function pointersIn(text, { repo, file, kind, previous = "", next = "" }) {
     }
   }
 
+  pointers.push(...fileAndNamePointers(wrapped, text.length, { repo, file, languageOf, declaration: DECLARATION }));
   return pointers;
 }
 
@@ -1114,6 +1121,7 @@ function check(root, { only = [], siblingsBeside } = {}) {
           line,
           column: pointer.column,
           ignorable: targets === 0 ? pointer.located?.() : undefined,
+          reportOnly: pointer.reportOnly,
           message:
             pointer.refusal ??
             `${pointer.heading ? pointer.display : `\`${pointer.display}\``} ${targets === 0 ? "resolves to nothing" : `resolves to ${targets} targets`}`,
@@ -1214,9 +1222,10 @@ function main(argv) {
   root = resolve(root ?? execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim());
   const { failures, pointerCount, fileCount, historyLint } = check(root, { only, siblingsBeside });
   for (const failure of failures) {
-    process.stdout.write(`${failure.file}:${failure.line}: ${failure.message}\n`);
+    process.stdout.write(`${failure.file}:${failure.line}: ${failure.message}${failure.reportOnly ? " (report only)" : ""}\n`);
   }
   const failingFiles = new Set(failures.map((failure) => failure.file)).size;
+  const fails = failures.some((failure) => !failure.reportOnly);
   const notes = failures.filter((failure) => failure.history).length;
   const counted = [
     failures.length > notes && plural(failures.length - notes, "failing pointer"),
@@ -1225,9 +1234,9 @@ function main(argv) {
   const summary =
     failures.length === 0
       ? `no failing pointers (${plural(pointerCount, "pointer")} checked in ${plural(fileCount, "file")})${historyLint ? ", no history notes" : ""}`
-      : `${counted.join(" and ")} in ${plural(failingFiles, "file")}${reportOnly ? " (report only)" : ""}`;
+      : `${counted.join(" and ")} in ${plural(failingFiles, "file")}${reportOnly || !fails ? " (report only)" : ""}`;
   process.stdout.write(`pointer-check: ${summary}\n`);
-  return failures.length > 0 && !reportOnly ? 1 : 0;
+  return fails && !reportOnly ? 1 : 0;
 }
 
 process.exitCode = main(process.argv.slice(2));
