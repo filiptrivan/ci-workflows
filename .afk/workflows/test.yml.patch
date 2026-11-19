@@ -1,0 +1,13 @@
+diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
+index c95e7f9..de68d88 100644
+--- a/.github/workflows/test.yml
++++ b/.github/workflows/test.yml
+@@ -23,7 +23,7 @@ jobs:
+       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+         with:
+           node-version-file: .nvmrc
+-      - run: node --test pointer-check/pointer-check.test.mjs
++      - run: node --test pointer-check/*.test.mjs
+ 
+   size-cap-tests:
+     name: size cap tests
