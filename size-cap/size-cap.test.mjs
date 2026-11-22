@@ -1,6 +1,7 @@
 // Pins the Size cap at its CLI, run as a pre-commit hook (`--staged`) and CI (whole-tree mode) run
 // it: each test builds a real git repo in a temp folder and asserts only the exit code and the
-// printed text. Its builders and the refusals' expected words: size-cap.fixtures.mjs.
+// printed text. Its builders: size-cap.fixtures.mjs. A test imports each text that size-cap.mjs and
+// size-refusal.mjs export, and copies none of them.
 //
 //   node --test size-cap/size-cap.test.mjs
 
@@ -10,11 +11,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { ADDED, CODE_RECIPE, commit, FOOTER, git, LISTED, RECIPES, repo, run, sizeLines, SPLIT, stage, text } from "./size-cap.fixtures.mjs";
+import { ADDED, commit, git, LISTED, repo, run, sizeLines, stage, text } from "./size-cap.fixtures.mjs";
+import { BAD_MARK, SETTINGS_SHAPE } from "./size-cap.mjs";
+import { FOOTER, RECIPES, SPLIT } from "./size-refusal.mjs";
 
 /* ------------------------------------------------------------------------- what is refused */
 
-test("a new file over the cap is refused with its size, the code recipe and the footer, word for word", () => {
+test("a new file over the cap is refused with its size, the code recipe and the footer", () => {
   const dir = repo({}, { "src/orders.ts": text(25_000) });
 
   const refused = run(dir, "--staged");
@@ -23,7 +26,7 @@ test("a new file over the cap is refused with its size, the code recipe and the 
   assert.ok(
     refused.out.includes(
       "size cap: src/orders.ts is 25,000 bytes = 6,250 tokens (bytes/4). The cap is 5,000 tokens (20,000 bytes).\n\n" +
-        `${SPLIT}\n\n${CODE_RECIPE}\n\n${FOOTER}\n`,
+        `${SPLIT}\n\n${RECIPES.code}\n\n${FOOTER}\n`,
     ),
     refused.out,
   );
@@ -85,6 +88,8 @@ const KINDS = {
   "CLAUDE.md": "resident",
   "pa/AGENTS.md": "resident",
   ".claude/skills/CLAUDE.md": "resident",
+  ".claude/rules/orders.md": "resident",
+  ".claude/rules/admin/pages.md": "resident",
   ".github/workflows/build.yml": "data",
   "messages/sr.json": "data",
   "Backend/OrderLifecycle.cs": "code",
@@ -131,7 +136,7 @@ test("a size-cap mark narrows its own file's cap: one byte over is refused namin
 test("a size-cap mark that narrows nothing is refused, however small its file; an unset one passes", () => {
   const dir = repo({}, { ".gitattributes": "a.md size-cap=10,000\nb.md size-cap=20000\nc.md size-cap\nd.md -size-cap\n", "a.md": "a\n", "b.md": "b\n", "c.md": "c\n", "d.md": "d\n" });
   const marks = ["a.md size-cap=10,000", "b.md size-cap=20000", "c.md size-cap"].map((mark) => mark.split(" "));
-  const bad = marks.map(([path, mark]) => `size cap: ${path}: its mark ${mark} narrows nothing: a size-cap mark takes a whole number of bytes under 20,000, as size-cap=10000`);
+  const bad = marks.map(([path, mark]) => `size cap: ${path}: its mark ${mark} ${BAD_MARK}`);
 
   const staged = run(dir, "--staged");
   commit(dir);
@@ -155,14 +160,12 @@ test("a repo's .size-cap.json guide prints under its kind's recipe, read from th
     assert.equal(refused.status, 1);
     const header = (path) => `size cap: ${path} is 25,000 bytes = 6,250 tokens (bytes/4). The cap is 5,000 tokens (20,000 bytes).`;
     assert.ok(refused.out.includes(`${header("CLAUDE.md")}\n\n${RECIPES.resident}\n\nThis repo's guide: docs/rules.md → "Lines".\n\n${FOOTER}\n`), refused.out);
-    assert.ok(refused.out.includes(`${header("src/orders.ts")}\n\n${SPLIT}\n\n${CODE_RECIPE}\n\n${FOOTER}\n`), refused.out);
+    assert.ok(refused.out.includes(`${header("src/orders.ts")}\n\n${SPLIT}\n\n${RECIPES.code}\n\n${FOOTER}\n`), refused.out);
   }
 });
 
 test("a .size-cap.json the check cannot read stops it with exit 2, never a pass", () => {
-  const shape =
-    'size cap: .size-cap.json holds { "guides": { "<kind>": "<where this repo says how such a file stays small>" } }, ' +
-    "each kind one of code, test, template, markdown, glossary, skill, resident, data\n";
+  const shape = `size cap: .size-cap.json holds ${SETTINGS_SHAPE}, each kind one of code, test, template, markdown, glossary, skill, resident, data\n`;
   for (const settings of ['{ "guides": { "residnet": "a.md" } }', '{ "guides": { "resident": 1 } }', '{ "guide": {} }', '{ "guides": null }', "[]"]) {
     assert.deepEqual(run(repo({}, { ".size-cap.json": settings }), "--staged"), { status: 2, out: shape }, settings);
   }
