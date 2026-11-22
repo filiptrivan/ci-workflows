@@ -211,7 +211,10 @@ than one target, and, in a repo whose `.pointer-check.jsonc` names its teammates
 file (`CLAUDE.md`, `AGENTS.md`, `.claude/rules/*.md`) holds an issue number or a who-and-when note.
 What counts as prose, as a pointer and as a history note, why the whole tree is scanned on every
 run, the `.pointer-check.jsonc` schema and the paths that are always exempt: the header of
-`pointer-check/pointer-check.mjs`.
+`pointer-check/pointer-check.mjs`. A file and a name together (prepare.mjs `runPrePushChecks`) only
+print, marked "(report only)", until the repo's `.pointer-check.jsonc` sets
+`"failFileAndNamePointers": true`: how they are judged is the header of
+`pointer-check/file-and-name.mjs`.
 
 Run it locally, from a repo checked out beside this one:
 
@@ -230,7 +233,7 @@ Add the caller, a job in an existing workflow:
       report_only: true   # drop once the tree reports zero failures
 ```
 
-Its tests: `node --test pointer-check/pointer-check.test.mjs`, run by `.github/workflows/test.yml`.
+Its tests: `node --test pointer-check/*.test.mjs`, run by `.github/workflows/test.yml`.
 
 ---
 
