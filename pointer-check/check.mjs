@@ -1,6 +1,6 @@
-// One run of the check over a checkout: each prose line of each file it selects, every pointer in
-// the line resolved, and the history notes of a resident file. It returns the failures, minus those
-// that name a file the repo ignores on purpose.
+// One run of the check over a checkout. It reads each prose line of each file it selects. It
+// resolves each pointer in the line and finds the history notes of a resident file. It returns
+// the failures, minus each failure that names a file the repo ignores on purpose.
 
 import { spawnSync } from "node:child_process";
 import { lstatSync } from "node:fs";

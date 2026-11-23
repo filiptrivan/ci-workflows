@@ -1,6 +1,6 @@
-// What of a file is prose and what is code. Prose is a Markdown file's lines outside its fences,
-// a code file's comments as its language writes them, and the guides of a root `.size-cap.json`.
-// A code file's code, comments and strings blanked, is what a name resolves against (repo.mjs).
+// Which parts of a file are prose and which are code. Prose is a Markdown file's lines outside its
+// fences, a code file's comments, and the guides of a root `.size-cap.json`. A name resolves
+// against a code file's code, with its comments and strings blanked (repo.mjs).
 
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";

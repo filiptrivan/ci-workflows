@@ -1,6 +1,6 @@
-// The heading pointer: a file pointer, an arrow and a quoted text. This file finds one after a file
-// pointer, lists what a Markdown file holds for it to land on, and matches and ranks its text
-// against those targets. A Markdown file, an arrow and an unquoted word fail with a refusal.
+// The heading pointer: a file pointer, an arrow and a quoted text. This file finds one after a
+// file pointer. It lists the targets in a Markdown file, and it matches and ranks the text against
+// them. A Markdown file, an arrow and an unquoted word fail with a refusal.
 
 import { posix } from "node:path";
 import { extensionOf, MARKDOWN_EXTENSIONS, markdownLines } from "./scan.mjs";

@@ -35,11 +35,10 @@
 import { readFileSync } from "node:fs";
 import { join, posix } from "node:path";
 import { MODULE_SUFFIXES } from "./repo.mjs";
-import { IDENTIFIER, readText } from "./scan.mjs";
+import { IDENTIFIER, readText, SPAN } from "./scan.mjs";
 
 const NAME_SPAN = new RegExp(`^(${IDENTIFIER})(?:\\(\\))?$`);
 const NAME = new RegExp(IDENTIFIER, "g");
-const SPAN = /(`+)(?!`)([\s\S]*?[^`])\1(?!`)/g;
 // A file as prose writes it bare: `@pa/shared/dictionary/base.ts`, `./read.mjs`, `prepare.mjs`.
 const FILE = "(?:\\.{1,2}/)?[\\w@~-][\\w@~./-]*\\.[A-Za-z0-9]+";
 const FILE_BEFORE = new RegExp(`(?:^|[\\s(\\[*_"'“])(${FILE})(?:['’]s)?\\s+$`);

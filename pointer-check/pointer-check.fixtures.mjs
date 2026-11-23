@@ -27,11 +27,7 @@ export function repo(files, parent = mkdtempSync(join(tmpdir(), "pointer-check-"
 }
 
 export function check(dir, ...args) {
-  return checkIn(dir, {}, ...args);
-}
-
-function checkIn(dir, env, ...args) {
-  const run = spawnSync("node", [CLI, ...args], { cwd: dir, encoding: "utf8", env: { ...process.env, ...env } });
+  const run = spawnSync("node", [CLI, ...args], { cwd: dir, encoding: "utf8" });
   const lines = run.stdout.split("\n").filter((line) => line.length > 0 && !line.startsWith("pointer-check:"));
   return { status: run.status, lines, stdout: run.stdout, stderr: run.stderr };
 }

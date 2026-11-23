@@ -1,5 +1,5 @@
-// Which files the check skips: the paths every repo exempts, then the repo's own `exempt` setting, a
-// path prefix or a glob each, where a `!` entry includes again and the last match wins.
+// Which files the check skips. The default paths come first, then the repo's own `exempt` setting.
+// An entry is a path prefix or a glob. A `!` entry includes a path again. The last match wins.
 
 // Dated snapshots stay true as of their date, so a pointer in one is history, not a claim.
 const DEFAULT_EXEMPT = ["docs/adr/", "docs/plans/", "docs/incidents/", "**/node_modules/**"];

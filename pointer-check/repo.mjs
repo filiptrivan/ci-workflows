@@ -22,7 +22,7 @@ const HERITAGE = new RegExp(
 );
 // A name a file declares: a type, namespace, function or binding keyword before it, or a key that
 // opens an object type (`StorefrontProductDTO: {` in generated OpenAPI types).
-export const DECLARATION =new RegExp(
+export const DECLARATION = new RegExp(
   `\\b(?:${TYPE_KEYWORD}|enum|type|namespace|module|function\\*?|def|const|let|var)\\s+(${IDENTIFIER})|^\\s*(${IDENTIFIER})\\??\\s*:\\s*\\{`,
   "gm",
 );

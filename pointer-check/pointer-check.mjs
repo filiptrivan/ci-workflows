@@ -58,10 +58,14 @@
 //     "failFileAndNamePointers": true                // absent: a file and a name is report-only
 //   }
 //
-// This file is the command: its options, the files --staged selects, and the report. The run is
-// check.mjs; what of a file is prose, scan.mjs; the checkout's indexes, repo.mjs; the pointers in a
-// line, pointers.mjs, headings.mjs and file-and-name.mjs; the history notes, history-lint.mjs.
-// No file imports this one, since importing it runs the command.
+// This file is the command: its options, the files --staged selects, and the report. Its parts:
+//   check.mjs          the run over a checkout
+//   scan.mjs           which parts of a file are prose
+//   repo.mjs           the checkout's indexes
+//   pointers.mjs       the pointers in a line, with headings.mjs and file-and-name.mjs
+//   history-lint.mjs   the history notes
+//   exempt.mjs         the files the check skips
+// No file imports this one, because importing it runs the command.
 
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
