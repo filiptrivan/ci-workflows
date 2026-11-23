@@ -210,8 +210,8 @@ Fails CI when prose names a file, a symbol, an ADR or a heading that resolves to
 than one target, and, in a repo whose `.pointer-check.jsonc` names its teammates, when a resident
 file (`CLAUDE.md`, `AGENTS.md`, `.claude/rules/*.md`) holds an issue number or a who-and-when note.
 What counts as prose, as a pointer and as a history note, why the whole tree is scanned on every
-run, the `.pointer-check.jsonc` schema and the paths that are always exempt: the header of
-`pointer-check/pointer-check.mjs`. A file and a name together (prepare.mjs `runPrePushChecks`) only
+run and the `.pointer-check.jsonc` schema: the header of `pointer-check/pointer-check.mjs`. The
+paths that are always exempt: `pointer-check/exempt.mjs`. A file and a name together (prepare.mjs `runPrePushChecks`) only
 print, marked "(report only)", until the repo's `.pointer-check.jsonc` sets
 `"failFileAndNamePointers": true`: how they are judged is the header of
 `pointer-check/file-and-name.mjs`.
