@@ -26,6 +26,11 @@ export function repo(files, parent = mkdtempSync(join(tmpdir(), "pointer-check-"
   return dir;
 }
 
+// A git command in `dir`, its output; a commit's author and committer are the test's, since CI's
+// runner names none.
+const IDENTITY = { GIT_AUTHOR_NAME: "test", GIT_AUTHOR_EMAIL: "test@example.com", GIT_COMMITTER_NAME: "test", GIT_COMMITTER_EMAIL: "test@example.com" };
+export const git = (dir, ...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", env: { ...process.env, ...IDENTITY } }).trim();
+
 export function check(dir, ...args) {
   const run = spawnSync("node", [CLI, ...args], { cwd: dir, encoding: "utf8" });
   const lines = run.stdout.split("\n").filter((line) => line.length > 0 && !line.startsWith("pointer-check:"));

@@ -1,5 +1,6 @@
 // Pins a pointer behind a sibling repo's name at the pointer check's CLI: checked in the sibling
-// when it is checked out, skipped when it is not, and its prefix read on a wrapped line.
+// when it is checked out or at the tree --sibling-tree names, skipped when it is not, and its
+// prefix read on a wrapped line.
 // What an agent observes is a pointer that resolves or does not, and an exit code that fails CI
 // or passes. How a file is parsed is not pinned.
 //
@@ -10,7 +11,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { check, repo } from "./pointer-check.fixtures.mjs";
+import { check, git, repo, writeTree } from "./pointer-check.fixtures.mjs";
 
 test("a pointer into a sibling repo is skipped when the sibling is absent", () => {
   const dir = repo({
@@ -95,4 +96,73 @@ test("a wrapped prefix opened by a parenthesis still names the repo of the ADR o
     "docs/live.md": "Every pointer resolves (umbrella\nADR 0047, prose never restates the code).\n",
   });
   assert.deepEqual(check(dir).lines, []);
+});
+
+// A change in two repos: pa-storefront's prose names a pa-cms field the same change adds. The pa-cms
+// clone beside it stands at origin's tip, which lacks the field; the change's commit is on a branch.
+function changeInTwoRepos() {
+  const parent = mkdtempSync(join(tmpdir(), "pointer-check-"));
+  const paCms = repo({ "Backend/Product.cs": "public class Product { public int Price; }\n" }, parent, "pa-cms");
+  git(paCms, "commit", "-qm", "origin's tip");
+  git(paCms, "switch", "-qc", "the-change");
+  writeTree(paCms, { "Backend/Product.cs": "public class Product { public int Price; public int Weight; }\n" });
+  git(paCms, "commit", "-qam", "the change adds Weight");
+  const merged = git(paCms, "rev-parse", "HEAD");
+  git(paCms, "switch", "-q", "main");
+  const storefront = repo(
+    {
+      ".pointer-check.jsonc": JSON.stringify({ siblings: { "pa-cms": ["../pa-cms"] } }),
+      "docs/live.md": "The card shows pa-cms `Product.Weight` beside pa-cms `Product.Price`.\n",
+    },
+    parent,
+    "pa-storefront",
+  );
+  return { paCms, merged, storefront };
+}
+
+test("a sibling tree the same change brings is read in place of the sibling's checkout, so a field it adds resolves", () => {
+  const { merged, storefront } = changeInTwoRepos();
+
+  const read = check(storefront, "--sibling-tree", `pa-cms=${merged}`);
+
+  assert.equal(read.status, 0, read.stdout + read.stderr);
+  assert.deepEqual(read.lines, []);
+});
+
+test("with no sibling tree given, the sibling is read in its checkout at origin's tip, which lacks the field", () => {
+  const { storefront } = changeInTwoRepos();
+
+  const read = check(storefront);
+
+  assert.equal(read.status, 1, read.stdout + read.stderr);
+  assert.deepEqual(read.lines, ["docs/live.md:1: `pa-cms Product.Weight` resolves to nothing"]);
+});
+
+test("a sibling tree is read from the clone's objects, never its working tree, so a draft there does not count", () => {
+  const { paCms, merged, storefront } = changeInTwoRepos();
+  writeTree(paCms, { "Backend/Draft.cs": "public class Draft { public int Weight; }\n" });
+  writeTree(storefront, { "docs/draft.md": "A draft: pa-cms `Draft.Weight`.\n" });
+
+  const read = check(storefront, "--sibling-tree", `pa-cms=${merged}`);
+
+  assert.deepEqual(read.lines, ["docs/draft.md:1: `pa-cms Draft.Weight` resolves to nothing"]);
+});
+
+test("a sibling tree that cannot be read stops the check with exit 2, never a pass or a failing pointer", () => {
+  const { storefront } = changeInTwoRepos();
+  const lone = repo({
+    ".pointer-check.jsonc": JSON.stringify({ siblings: { "pa-cms": ["../pa-cms"] } }),
+    "docs/live.md": "pa-cms `Product.Weight`.\n",
+  });
+
+  for (const [dir, value, says] of [
+    [storefront, "spiderly=HEAD", "spiderly is no sibling"],
+    [storefront, `pa-cms=${"0".repeat(40)}`, `pa-cms holds no tree ${"0".repeat(40)}`],
+    [storefront, "pa-cms", "takes <name>=<commit>"],
+    [lone, "pa-cms=HEAD", "no clone of pa-cms"],
+  ]) {
+    const run = check(dir, "--sibling-tree", value);
+    assert.equal(run.status, 2, `${value}: ${run.stdout}${run.stderr}`);
+    assert.ok(run.stderr.includes(says), `${value}: ${run.stderr}`);
+  }
 });

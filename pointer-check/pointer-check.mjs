@@ -2,7 +2,8 @@
 // Fails when prose names a file, a symbol, an ADR or a heading that does not exist, or names it
 // ambiguously.
 //
-//   node pointer-check.mjs [--root <dir>] [--siblings-beside <checkout>] [--staged] [--report-only] [path ...]
+//   node pointer-check.mjs [--root <dir>] [--siblings-beside <checkout>] [--sibling-tree <name>=<commit>]...
+//     [--staged] [--report-only] [path ...]
 //
 // Prose is every Markdown file, every comment in a code file and each guide in a root
 // `.size-cap.json` (scan.mjs `sizeCapGuides`), minus the exempt set (exempt.mjs). A pointer
@@ -31,7 +32,10 @@
 //                     pa-cms ADR 0009); checked in that sibling when it is checked out beside
 //                     this one, skipped when it is not, so a lone clone's CI never fails on it;
 //                     --siblings-beside reads them beside <checkout> instead, for a copy of it
-//                     (a throwaway worktree at a pinned commit, whose own `..` holds no sibling)
+//                     (a throwaway worktree at a pinned commit, whose own `..` holds no sibling);
+//                     --sibling-tree reads sibling <name> at <commit> of its clone instead of its
+//                     checkout: the tree the same change brings (sibling-tree.mjs). It exits 2 when
+//                     <name> is no sibling, has no clone, or its clone holds no such tree
 //   a file and a name  prepare.mjs `runPrePushChecks`, `name` in @pa/shared/x.ts; resolves when
 //                     the file declares, exports or uses the name (file-and-name.mjs). It is
 //                     report-only until the repo's settings turn it on
@@ -62,6 +66,7 @@
 //   check.mjs          the run over a checkout
 //   scan.mjs           which parts of a file are prose
 //   repo.mjs           the checkout's indexes
+//   sibling-tree.mjs   a sibling read at a tree
 //   pointers.mjs       the pointers in a line, with headings.mjs and file-and-name.mjs
 //   history-lint.mjs   the history notes
 //   exempt.mjs         the files the check skips
@@ -70,6 +75,7 @@
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { check } from "./check.mjs";
+import { siblingTreeOf } from "./sibling-tree.mjs";
 
 import { ownChanges } from "../own-changes/own-changes.mjs";
 
@@ -83,6 +89,7 @@ const HOOK_GIT_VARIABLES = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_P
 function main(argv) {
   let root;
   let siblingsBeside;
+  const siblingTrees = new Map();
   let staged = false;
   let reportOnly = false;
   const only = [];
@@ -91,7 +98,14 @@ function main(argv) {
     else if (argv[i] === "--staged") staged = true;
     else if (argv[i] === "--root") root = argv[++i];
     else if (argv[i] === "--siblings-beside") siblingsBeside = resolve(argv[++i]);
-    else if (argv[i].startsWith("--")) {
+    else if (argv[i] === "--sibling-tree") {
+      try {
+        siblingTrees.set(...siblingTreeOf(argv[++i]));
+      } catch (error) {
+        process.stderr.write(`pointer-check: ${error.message}\n`);
+        return 2;
+      }
+    } else if (argv[i].startsWith("--")) {
       process.stderr.write(`pointer-check: unknown option ${argv[i]}\n`);
       return 2;
     } else only.push(argv[i].replace(/^\.\//, ""));
@@ -108,7 +122,16 @@ function main(argv) {
   }
   for (const name of HOOK_GIT_VARIABLES) delete process.env[name];
   root = resolve(root ?? execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim());
-  const { failures, pointerCount, fileCount, historyLint } = check(root, { only, siblingsBeside });
+  let checked;
+  try {
+    checked = check(root, { only, siblingsBeside, siblingTrees });
+  } catch (error) {
+    // A sibling tree that cannot be read is a run that cannot start, never a failing pointer.
+    if (!error.message.startsWith("--sibling-tree")) throw error;
+    process.stderr.write(`pointer-check: ${error.message}\n`);
+    return 2;
+  }
+  const { failures, pointerCount, fileCount, historyLint } = checked;
   for (const failure of failures) {
     process.stdout.write(`${failure.file}:${failure.line}: ${failure.message}${failure.reportOnly ? " (report only)" : ""}\n`);
   }

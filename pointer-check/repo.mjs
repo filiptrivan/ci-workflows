@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, readlinkSync } from "node:fs";
 import { isAbsolute, join, posix, resolve, sep } from "node:path";
 import { headingTargetsIn } from "./headings.mjs";
+import { checkOutTree } from "./sibling-tree.mjs";
 import { extensionOf, IDENTIFIER, languageOf, readText, skipString } from "./scan.mjs";
 
 // What an import of an extensionless specifier may land on, in the order a bundler tries.
@@ -63,9 +64,13 @@ function words(text) {
 
 // One checkout, and what a pointer resolves against in it.
 export class Repo {
-  constructor(root, siblingsBeside = root) {
+  // `siblingTrees`, by sibling name, the tree each named sibling is read at (sibling-tree.mjs).
+  constructor(root, siblingsBeside = root, siblingTrees = new Map()) {
     this.root = root;
     this.siblingsBeside = siblingsBeside;
+    this.siblingTrees = siblingTrees;
+    // The scratch directories its siblings' trees are checked out into, for the caller to remove.
+    this.checkedOutTrees = [];
     this.config = Repo.readConfig(root);
     const { files, linked } = Repo.listFiles(root);
     // `scanned` are real files; `files` adds the paths that reach a file through a symlinked
@@ -146,7 +151,14 @@ export class Repo {
     if (!this.siblings.has(name)) {
       const paths = [this.config.siblings[name]].flat();
       const found = paths.map((path) => resolve(this.siblingsBeside, path)).find((path) => existsSync(join(path, ".git")));
-      this.siblings.set(name, found ? new Repo(found) : null);
+      const tree = this.siblingTrees.get(name);
+      if (tree === undefined) this.siblings.set(name, found ? new Repo(found) : null);
+      else {
+        if (!found) throw new Error(`--sibling-tree ${name}=${tree}: no clone of ${name} at ${paths.join(" or ")} beside ${this.siblingsBeside}`);
+        const dir = checkOutTree(found, name, tree);
+        this.checkedOutTrees.push(dir);
+        this.siblings.set(name, new Repo(dir));
+      }
     }
     return this.siblings.get(name);
   }
