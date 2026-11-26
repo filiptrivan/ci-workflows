@@ -31,34 +31,27 @@
 // A failing one is printed and fails nothing. A repo's `.pointer-check.jsonc` makes it fail with
 // `"failFileAndNamePointers": true`. CI in every repo runs the main branch of these workflows at
 // once, so a default here would fail each repo before its own fixes are pushed.
-//
-// IDENTIFIER, MODULE_SUFFIXES and readText are copies of the ones in pointer-check.mjs, because
-// that file runs its CLI when it is imported.
 
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join, posix } from "node:path";
+import { MODULE_SUFFIXES } from "./repo.mjs";
+import { IDENTIFIER, readText, SPAN } from "./scan.mjs";
 
-const IDENTIFIER = "[A-Za-z_$][\\w$]*";
 const NAME_SPAN = new RegExp(`^(${IDENTIFIER})(?:\\(\\))?$`);
 const NAME = new RegExp(IDENTIFIER, "g");
-const SPAN = /(`+)(?!`)([\s\S]*?[^`])\1(?!`)/g;
 // A file as prose writes it bare: `@pa/shared/dictionary/base.ts`, `./read.mjs`, `prepare.mjs`.
 const FILE = "(?:\\.{1,2}/)?[\\w@~-][\\w@~./-]*\\.[A-Za-z0-9]+";
 const FILE_BEFORE = new RegExp(`(?:^|[\\s(\\[*_"'“])(${FILE})(?:['’]s)?\\s+$`);
 const FILE_AFTER = new RegExp(`^\\s+(?:in|at)\\s+(${FILE})(?![\\w/@~-]|\\.\\w)`);
 const BACKTICKED_FILE = new RegExp(`^${FILE}(?::\\d+(?:-\\d+)?)?$`);
 const OUT_OF = /\bout of\s*$/i;
-const MODULE_SUFFIXES = ["ts", "tsx", "mts", "js", "jsx", "mjs", "cjs"].flatMap((extension) => [
-  `.${extension}`,
-  `/index.${extension}`,
-]);
 const MAX_REEXPORT_DEPTH = 5;
 
 // The file-and-name pointers of one prose line. `wrapped` is the line joined with the next line,
 // and `lineLength` is the length of the line alone. Only a pointer that starts on the line is
 // returned, so a wrapped pointer is read whole and reported once, at its first line. `previous` is
-// the line before. Each pointer has the shape that pointersIn returns. Its resolve() also sets its
-// `refusal`, the message that a failure prints.
+// the line before. Each pointer has the shape that pointers.mjs `pointersIn` returns. Its
+// resolve() also sets its `refusal`, the message that a failure prints.
 export function fileAndNamePointers(wrapped, lineLength, { previous = "", repo, file, languageOf, declaration }) {
   const spans = [...wrapped.matchAll(SPAN)].map((match) => ({
     start: match.index,
@@ -342,14 +335,4 @@ function declarersOf(owner, context) {
     DECLARERS.set(owner, declarers);
   }
   return DECLARERS.get(owner);
-}
-
-function readText(path) {
-  try {
-    if (statSync(path).size > 8 * 1024 * 1024) return undefined;
-    const text = readFileSync(path, "utf8");
-    return text.includes("\0") ? undefined : text;
-  } catch {
-    return undefined;
-  }
 }
