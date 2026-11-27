@@ -7,11 +7,11 @@
 //   node --test pointer-check/siblings.test.mjs
 
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { check, git, repo, writeTree } from "./pointer-check.fixtures.mjs";
+import { check, checkWithTmp, git, repo, writeTree } from "./pointer-check.fixtures.mjs";
 
 test("a pointer into a sibling repo is skipped when the sibling is absent", () => {
   const dir = repo({
@@ -165,4 +165,21 @@ test("a sibling tree that cannot be read stops the check with exit 2, never a pa
     assert.equal(run.status, 2, `${value}: ${run.stdout}${run.stderr}`);
     assert.ok(run.stderr.includes(says), `${value}: ${run.stderr}`);
   }
+});
+
+test("a sibling tree is written into a scratch directory that the run removes, and a tree git cannot write exits 2 and leaves none", () => {
+  const { paCms, merged, storefront } = changeInTwoRepos();
+  const tmp = mkdtempSync(join(tmpdir(), "pointer-check-tmp-"));
+
+  const read = checkWithTmp(tmp, storefront, "--sibling-tree", `pa-cms=${merged}`);
+  assert.equal(read.status, 0, read.stdout + read.stderr);
+  assert.deepEqual(readdirSync(tmp), [], "a green run leaves no scratch directory");
+
+  // The tree is there, but a blob it holds is gone, so git cannot write the files.
+  const blob = git(paCms, "rev-parse", `${merged}:Backend/Product.cs`);
+  rmSync(join(paCms, ".git", "objects", blob.slice(0, 2), blob.slice(2)));
+  const broken = checkWithTmp(tmp, storefront, "--sibling-tree", `pa-cms=${merged}`);
+  assert.equal(broken.status, 2, broken.stdout + broken.stderr);
+  assert.ok(broken.stderr.includes(`--sibling-tree pa-cms=${merged}: git could not write the tree`), broken.stderr);
+  assert.deepEqual(readdirSync(tmp), [], "a run that git stops leaves no scratch directory");
 });

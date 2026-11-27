@@ -20,19 +20,27 @@ export function writeTree(dir, files) {
 export function repo(files, parent = mkdtempSync(join(tmpdir(), "pointer-check-")), name = "repo") {
   const dir = join(parent, name);
   mkdirSync(dir, { recursive: true });
-  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: dir });
+  git(dir, "init", "-q", "-b", "main");
   writeTree(dir, files);
-  execFileSync("git", ["add", "-A"], { cwd: dir });
+  git(dir, "add", "-A");
   return dir;
 }
 
-// A git command in `dir`, its output; a commit's author and committer are the test's, since CI's
+// A git command in `dir`, its output. A commit's author and committer are the test's, since CI's
 // runner names none.
 const IDENTITY = { GIT_AUTHOR_NAME: "test", GIT_AUTHOR_EMAIL: "test@example.com", GIT_COMMITTER_NAME: "test", GIT_COMMITTER_EMAIL: "test@example.com" };
-export const git = (dir, ...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", env: { ...process.env, ...IDENTITY } }).trim();
+export function git(dir, ...args) {
+  return execFileSync("git", args, { cwd: dir, encoding: "utf8", env: { ...process.env, ...IDENTITY } }).trim();
+}
 
 export function check(dir, ...args) {
-  const run = spawnSync("node", [CLI, ...args], { cwd: dir, encoding: "utf8" });
+  return checkWithTmp(undefined, dir, ...args);
+}
+
+// A run of the CLI whose scratch directories go under `tmp`, so a test can see what it leaves.
+export function checkWithTmp(tmp, dir, ...args) {
+  const env = tmp ? { ...process.env, TMPDIR: tmp } : process.env;
+  const run = spawnSync("node", [CLI, ...args], { cwd: dir, encoding: "utf8", env });
   const lines = run.stdout.split("\n").filter((line) => line.length > 0 && !line.startsWith("pointer-check:"));
   return { status: run.status, lines, stdout: run.stdout, stderr: run.stderr };
 }

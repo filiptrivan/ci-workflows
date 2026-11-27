@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, readlinkSync } from "node:fs";
 import { isAbsolute, join, posix, resolve, sep } from "node:path";
 import { headingTargetsIn } from "./headings.mjs";
-import { checkOutTree } from "./sibling-tree.mjs";
+import { SiblingTreeError, writeTree } from "./sibling-tree.mjs";
 import { extensionOf, IDENTIFIER, languageOf, readText, skipString } from "./scan.mjs";
 
 // What an import of an extensionless specifier may land on, in the order a bundler tries.
@@ -69,8 +69,8 @@ export class Repo {
     this.root = root;
     this.siblingsBeside = siblingsBeside;
     this.siblingTrees = siblingTrees;
-    // The scratch directories its siblings' trees are checked out into, for the caller to remove.
-    this.checkedOutTrees = [];
+    // The scratch directories that hold its siblings' trees. The caller removes them.
+    this.scratchDirs = [];
     this.config = Repo.readConfig(root);
     const { files, linked } = Repo.listFiles(root);
     // `scanned` are real files; `files` adds the paths that reach a file through a symlinked
@@ -150,17 +150,28 @@ export class Repo {
     if (!Object.hasOwn(this.config.siblings, name)) return undefined;
     if (!this.siblings.has(name)) {
       const paths = [this.config.siblings[name]].flat();
-      const found = paths.map((path) => resolve(this.siblingsBeside, path)).find((path) => existsSync(join(path, ".git")));
+      const clone = paths.map((path) => resolve(this.siblingsBeside, path)).find((path) => existsSync(join(path, ".git")));
       const tree = this.siblingTrees.get(name);
-      if (tree === undefined) this.siblings.set(name, found ? new Repo(found) : null);
+      if (tree === undefined) this.siblings.set(name, clone ? new Repo(clone) : null);
       else {
-        if (!found) throw new Error(`--sibling-tree ${name}=${tree}: no clone of ${name} at ${paths.join(" or ")} beside ${this.siblingsBeside}`);
-        const dir = checkOutTree(found, name, tree);
-        this.checkedOutTrees.push(dir);
+        if (!clone) throw new SiblingTreeError(`--sibling-tree ${name}=${tree}: no clone of ${name} at ${paths.join(" or ")} beside ${this.siblingsBeside}`);
+        const dir = writeTree(clone, name, tree);
+        this.scratchDirs.push(dir);
         this.siblings.set(name, new Repo(dir));
       }
     }
     return this.siblings.get(name);
+  }
+
+  // Reads each sibling that `siblingTrees` names at its tree, before a run starts. A name that is
+  // no sibling, or a tree that cannot be read, throws a SiblingTreeError.
+  readSiblingTrees() {
+    for (const name of this.siblingTrees.keys()) {
+      if (!Object.hasOwn(this.config.siblings, name)) {
+        throw new SiblingTreeError(`--sibling-tree ${name}: ${name} is no sibling of this repo; its .pointer-check.jsonc names ${this.siblingNames().join(", ") || "none"}`);
+      }
+      this.sibling(name);
+    }
   }
 
   siblingNames() {

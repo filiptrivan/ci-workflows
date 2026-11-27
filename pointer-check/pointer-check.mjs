@@ -33,9 +33,9 @@
 //                     this one, skipped when it is not, so a lone clone's CI never fails on it;
 //                     --siblings-beside reads them beside <checkout> instead, for a copy of it
 //                     (a throwaway worktree at a pinned commit, whose own `..` holds no sibling);
-//                     --sibling-tree reads sibling <name> at <commit> of its clone instead of its
-//                     checkout: the tree the same change brings (sibling-tree.mjs). It exits 2 when
-//                     <name> is no sibling, has no clone, or its clone holds no such tree
+//                     --sibling-tree reads sibling <name> at <commit> of its clone, not in its
+//                     checkout: the tree the same change brings (sibling-tree.mjs). The command
+//                     exits 2 when it cannot read that tree
 //   a file and a name  prepare.mjs `runPrePushChecks`, `name` in @pa/shared/x.ts; resolves when
 //                     the file declares, exports or uses the name (file-and-name.mjs). It is
 //                     report-only until the repo's settings turn it on
@@ -75,7 +75,7 @@
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { check } from "./check.mjs";
-import { siblingTreeOf } from "./sibling-tree.mjs";
+import { SiblingTreeError, siblingTreeOf } from "./sibling-tree.mjs";
 
 import { ownChanges } from "../own-changes/own-changes.mjs";
 
@@ -126,8 +126,8 @@ function main(argv) {
   try {
     checked = check(root, { only, siblingsBeside, siblingTrees });
   } catch (error) {
-    // A sibling tree that cannot be read is a run that cannot start, never a failing pointer.
-    if (!error.message.startsWith("--sibling-tree")) throw error;
+    // A sibling tree that cannot be read stops the run, and is never a failing pointer.
+    if (!(error instanceof SiblingTreeError)) throw error;
     process.stderr.write(`pointer-check: ${error.message}\n`);
     return 2;
   }

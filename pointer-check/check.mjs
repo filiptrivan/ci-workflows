@@ -10,22 +10,17 @@ import { historyNotes, RESIDENT } from "./history-lint.mjs";
 import { pointersIn } from "./pointers.mjs";
 import { Repo } from "./repo.mjs";
 import { prose } from "./scan.mjs";
-import { removeTrees } from "./sibling-tree.mjs";
+import { removeScratchDirs } from "./sibling-tree.mjs";
 
-// `siblingTrees`, by sibling name, the tree each named sibling is read at, in place of its checkout
-// (sibling-tree.mjs). A name that is no sibling, or a tree that cannot be read, throws before the run.
+// `siblingTrees`, by sibling name, the tree to read each named sibling at, in place of its
+// checkout (sibling-tree.mjs). A tree that cannot be read throws a SiblingTreeError before the run.
 export function check(root, { only = [], siblingsBeside, siblingTrees = new Map() } = {}) {
   const repo = new Repo(root, siblingsBeside, siblingTrees);
   try {
-    for (const name of siblingTrees.keys()) {
-      if (!Object.hasOwn(repo.config.siblings, name)) {
-        throw new Error(`--sibling-tree ${name}: ${name} is no sibling of this repo; its .pointer-check.jsonc names ${repo.siblingNames().join(", ") || "none"}`);
-      }
-      repo.sibling(name);
-    }
+    repo.readSiblingTrees();
     return checkRepo(repo, only);
   } finally {
-    removeTrees(repo.checkedOutTrees);
+    removeScratchDirs(repo.scratchDirs);
   }
 }
 
